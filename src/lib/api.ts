@@ -9,7 +9,15 @@ const BASE_URL = process.env.NEXT_PUBLIC_REFLOW_API_URL || "https://reflow-backe
 
 function getToken(): string {
     if (typeof window !== "undefined") {
-        return sessionStorage.getItem("auth_token") || localStorage.getItem("auth_token") || "";
+        const token = sessionStorage.getItem("auth_token");
+        if (!token) {
+            // Strictly enforce tab-level sessions
+            deleteCookie("auth_token");
+            deleteCookie("username");
+            deleteCookie("fullName");
+            return "";
+        }
+        return token;
     }
     return "";
 }
@@ -251,14 +259,17 @@ export async function healthCheck() {
  * Set cookie in browser (client-side only)
  * This is used to store auth token in cookies so middleware can access it
  */
-function setCookie(name: string, value: string, days: number = 7) {
+function setCookie(name: string, value: string, days?: number) {
     if (typeof document === "undefined") return; // Skip on server
-    const date = new Date();
-    date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000);
-    const expires = date.toUTCString();
-    // Format: name=value; expires=...; path=/; SameSite=Strict; secure (if HTTPS)
-    const cookieString = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
-    console.log(`[SetCookie] Setting: ${name} (expires: ${expires})`);
+    let expires = "";
+    if (days) {
+        const date = new Date();
+        date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000);
+        expires = `expires=${date.toUTCString()}; `;
+    }
+    // Format: name=value; expires=...; path=/; SameSite=Lax; secure (if HTTPS)
+    const cookieString = `${name}=${encodeURIComponent(value)}; ${expires}path=/; SameSite=Lax`;
+    console.log(`[SetCookie] Setting: ${name}`);
     document.cookie = cookieString;
     
     // Verify cookie was set
@@ -278,7 +289,11 @@ function getCookie(name: string): string | null {
     for (let cookie of cookies) {
         cookie = cookie.trim();
         if (cookie.startsWith(nameEQ)) {
-            return cookie.substring(nameEQ.length);
+            try {
+                return decodeURIComponent(cookie.substring(nameEQ.length));
+            } catch (e) {
+                return cookie.substring(nameEQ.length);
+            }
         }
     }
     return null;
@@ -289,7 +304,7 @@ function getCookie(name: string): string | null {
  */
 function deleteCookie(name: string) {
     if (typeof document === "undefined") return; // Skip on server
-    setCookie(name, "", -1);
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
 }
 
 export function isAuthenticated(): boolean {
@@ -299,7 +314,7 @@ export function isAuthenticated(): boolean {
 export function saveToken(token: string) {
     // Save to both sessionStorage (client-side) and cookies (for middleware)
     sessionStorage.setItem("auth_token", token);
-    setCookie("auth_token", token, 7); // 7 days expiry
+    setCookie("auth_token", token); // No expiry passed = session cookie
 }
 
 export function clearAuth() {
@@ -310,6 +325,9 @@ export function clearAuth() {
     sessionStorage.removeItem("org_confirmed");
     sessionStorage.removeItem("org_setup_skipped");
     
+    // Clear from localStorage
+    localStorage.removeItem("auth_token");
+
     // Clear from cookies
     deleteCookie("auth_token");
     deleteCookie("username");
@@ -323,18 +341,18 @@ export function saveUserInfo(email: string, name: string) {
     sessionStorage.setItem("fullName", name);
     
     // Save to cookies (for middleware)
-    setCookie("username", email, 7);
-    setCookie("fullName", name, 7);
+    setCookie("username", email);
+    setCookie("fullName", name);
 }
 
 export function saveOrgConfirmed() {
     sessionStorage.setItem("org_confirmed", "true");
-    setCookie("org_confirmed", "true", 7);
+    setCookie("org_confirmed", "true");
 }
 
 export function saveOrgSetupSkipped() {
     sessionStorage.setItem("org_setup_skipped", "true");
-    setCookie("org_setup_skipped", "true", 7);
+    setCookie("org_setup_skipped", "true");
 }
 
 export function getUserEmail(): string {
