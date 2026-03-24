@@ -11,7 +11,7 @@ import {
     LineChart, Line,
     AreaChart, Area,
     BarChart, Bar,
-    XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
+    XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
 } from "recharts";
 import {
     FileDown, Loader2, RefreshCw, Cpu,
@@ -384,26 +384,55 @@ export default function AnalyticsPage() {
 
     // Chart renderer
     const renderChart = () => {
+        // ── Y-axis domain: ±20% of actual data range, not forced to zero ──
+        const allValues = processedChartData.flatMap(row =>
+            activeKeys.map(k => row[k]).filter((v): v is number => typeof v === "number")
+        );
+        const dataMin = allValues.length > 0 ? Math.min(...allValues) : 0;
+        const dataMax = allValues.length > 0 ? Math.max(...allValues) : 10;
+        const padding = Math.abs(dataMax - dataMin) * 0.2 || Math.abs(dataMax) * 0.2 || 1;
+        const yMin = dataMin - padding;
+        const yMax = dataMax + padding;
+
+        // ── X-axis: use numeric ts for proper time spacing, format for display ──
+        const xMin = processedChartData.length > 0 ? processedChartData[0].ts as number : undefined;
+        const xMax = processedChartData.length > 0 ? processedChartData[processedChartData.length - 1].ts as number : undefined;
+
+        const formatTick = (ts: number) => {
+            if (!ts || typeof ts !== "number") return "";
+            const d = new Date(ts);
+            const day = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+            const time = d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false });
+            return livePolling ? time : `${day}, ${time}`;
+        };
+
         const sharedProps = {
             data: processedChartData,
             margin: { top: 5, right: 30, left: 20, bottom: 5 },
         };
         const xAxis = (
             <XAxis
-                dataKey="time"
+                dataKey="ts"
+                type="number"
+                scale="time"
+                domain={[xMin ?? "auto", xMax ?? "auto"]}
                 tick={{ fontSize: 11, fill: "#94a3b8" }}
-                interval="preserveStartEnd"
-                tickFormatter={(v: string) => {
-                    if (typeof v !== "string") return v;
-                    // Shorten to just HH:MM if live, else keep as is
-                    return livePolling ? v.slice(0, 5) : v;
-                }}
+                tickFormatter={formatTick}
+                tickCount={8}
+                minTickGap={60}
             />
         );
-        const yAxis = <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} />;
+        const yAxis = (
+            <YAxis
+                tick={{ fontSize: 11, fill: "#94a3b8" }}
+                domain={[yMin, yMax]}
+                tickFormatter={(v: number) => `${Number(v).toFixed(1)}${showDeviation ? "%" : ""}`}
+            />
+        );
         const grid = <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />;
         const tooltip = (
             <Tooltip
+                labelFormatter={(ts: number) => formatTick(ts)}
                 contentStyle={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px", fontSize: "12px" }}
                 formatter={(value: number, name: string) => [
                     `${value}${showDeviation ? "%" : ""}`,
@@ -417,11 +446,21 @@ export default function AnalyticsPage() {
                 wrapperStyle={{ cursor: "pointer", fontSize: "12px" }}
             />
         );
+        // Ideal range reference lines (only in deviation mode: ±5% ideal band)
+        const idealLines = showDeviation ? (
+            <>
+                <ReferenceLine y={5} stroke="#22c55e" strokeDasharray="6 3" strokeWidth={1.5}
+                    label={{ value: "+5% ideal", position: "insideTopRight", fontSize: 10, fill: "#16a34a" }} />
+                <ReferenceLine y={-5} stroke="#22c55e" strokeDasharray="6 3" strokeWidth={1.5}
+                    label={{ value: "-5% ideal", position: "insideBottomRight", fontSize: 10, fill: "#16a34a" }} />
+                <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth={1} />
+            </>
+        ) : null;
 
         if (chartType === "Bar") {
             return (
                 <BarChart {...sharedProps}>
-                    {grid}{xAxis}{yAxis}{tooltip}{legend}
+                    {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                     {activeKeys.map((key, i) => (
                         <Bar key={key} dataKey={key} fill={COLORS[i % COLORS.length]} opacity={0.85} radius={[3,3,0,0]} />
                     ))}
@@ -439,7 +478,7 @@ export default function AnalyticsPage() {
                             </linearGradient>
                         ))}
                     </defs>
-                    {grid}{xAxis}{yAxis}{tooltip}{legend}
+                    {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                     {activeKeys.map((key, i) => (
                         <Area
                             key={key} type="monotone" dataKey={key}
@@ -454,7 +493,7 @@ export default function AnalyticsPage() {
         // Line (default)
         return (
             <LineChart {...sharedProps}>
-                {grid}{xAxis}{yAxis}{tooltip}{legend}
+                {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                 {activeKeys.map((key, i) => (
                     <Line
                         key={key} type="monotone" dataKey={key}
