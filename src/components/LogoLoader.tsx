@@ -62,6 +62,7 @@ export default function LogoLoader({ text = "Loading console..." }: LogoLoaderPr
             fill
             className="object-contain"
             priority
+            unoptimized
           />
         </motion.div>
       </div>

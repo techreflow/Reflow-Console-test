@@ -80,6 +80,7 @@ export default function Sidebar({ user, mobileOpen = false, onMobileClose }: Sid
           height={collapsed ? 32 : 40}
           className="object-contain flex-shrink-0 transition-all duration-300"
           priority
+          unoptimized
         />
       </div>
 

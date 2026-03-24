@@ -344,6 +344,7 @@ function VerifyOTPContent() {
                                 fill
                                 className="object-contain"
                                 priority
+                                unoptimized
                             />
                         </motion.div>
 

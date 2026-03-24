@@ -331,6 +331,7 @@ export default function LoginPage() {
                                     fill
                                     className="object-contain"
                                     priority
+                                    unoptimized
                                 />
                             </motion.div>
 

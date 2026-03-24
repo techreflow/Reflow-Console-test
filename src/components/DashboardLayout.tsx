@@ -48,7 +48,7 @@ function LayoutInner({
           >
             <Menu className="w-5 h-5" />
           </button>
-          <Image src="/translogo.png" alt="ReFlow" width={120} height={28} className="object-contain" priority />
+          <Image src="/translogo.png" alt="ReFlow" width={120} height={28} className="object-contain" priority unoptimized />
         </div>
         <Header title={title} subtitle={subtitle} breadcrumbs={breadcrumbs} />
         <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 bg-background relative z-0">

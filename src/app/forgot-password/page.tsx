@@ -216,6 +216,7 @@ export default function ForgotPasswordPage() {
                                     fill
                                     className="object-contain"
                                     priority
+                                    unoptimized
                                 />
                             </motion.div>
 

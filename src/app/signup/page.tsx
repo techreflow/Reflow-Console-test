@@ -326,7 +326,7 @@ export default function SignupPage() {
                         <div className="absolute bottom-0 left-0 w-40 h-40 bg-gradient-to-tr from-blue-400/10 to-transparent rounded-tr-full" />
                         <p className="text-2xl font-bold text-gray-800 mb-8">REFLOW CONSOLE</p>
                         <div className="relative w-64 h-28 mb-8 mx-auto">
-                            <Image src="/translogo.png" alt="ReFlow Logo" fill className="object-contain" priority />
+                            <Image src="/translogo.png" alt="ReFlow Logo" fill className="object-contain" priority unoptimized />
                         </div>
                         <p className="text-lg text-gray-600 font-semibold">Smarter. Better. Faster.</p>
                         <div className="flex justify-center gap-2 mt-8">
