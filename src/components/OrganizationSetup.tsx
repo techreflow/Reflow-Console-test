@@ -22,8 +22,9 @@ export default function OrganizationSetup({ onComplete }: OrganizationSetupProps
     useEffect(() => {
         // Check if user already belongs to an org
         async function checkOrg() {
-            // Check session cache first to avoid redundant API calls
-            if (typeof window !== "undefined" && sessionStorage.getItem("org_confirmed")) {
+            // Check session/local cache first to avoid redundant API calls
+            if (typeof window !== "undefined" &&
+                (sessionStorage.getItem("org_confirmed") || localStorage.getItem("org_confirmed"))) {
                 setHasOrg(true);
                 onComplete();
                 return;

@@ -171,8 +171,21 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
             setLastFetched(Date.now());
             console.timeEnd("[Cache] fetchAll");
         } catch (err) {
-            console.error("[Cache] Error fetching data:", err);
-            setError("Could not load data. Please check your connection.");
+            // Retry once after a short delay to handle transient failures
+            console.warn("[Cache] First fetch attempt failed, retrying in 2s…", err);
+            try {
+                await new Promise((r) => setTimeout(r, 2000));
+                const data = await getAllProjects();
+                const projectList: Project[] = Array.isArray(data)
+                    ? data
+                    : (data?.data?.projects || data?.projects || data?.data || []);
+                setProjects(projectList);
+                setLastFetched(Date.now());
+                console.log("[Cache] Retry succeeded");
+            } catch (retryErr) {
+                console.error("[Cache] Retry also failed:", retryErr);
+                setError("Could not load data. Please check your connection.");
+            }
         } finally {
             setLoading(false);
         }

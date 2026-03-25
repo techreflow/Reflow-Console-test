@@ -14,6 +14,13 @@ export function useOrgGuard() {
 
     useEffect(() => {
         async function check() {
+            // Fast path: if org was already confirmed in a prior session, skip API call
+            if (typeof window !== "undefined" &&
+                (localStorage.getItem("org_confirmed") || sessionStorage.getItem("org_confirmed"))) {
+                setHasOrg(true);
+                setOrgChecked(true);
+                return;
+            }
             try {
                 const data = await getOrganization();
                 // If the server returned HTTP 200-299, user is in an org

@@ -152,7 +152,7 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
                                 <button onClick={() => setShowDeleteConfirm(false)} className="px-4 py-2 rounded-lg border border-red-200 bg-white text-sm font-medium text-red-700">Cancel</button>
                                 <button disabled={deleting} onClick={async () => {
                                     setDeleting(true);
-                                    try { await deleteProject(projectId); router.push("/projects"); }
+                                    try { await deleteProject(projectId); await refresh(); router.push("/projects"); }
                                     catch { setDeleting(false); setShowDeleteConfirm(false); }
                                 }} className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-60">
                                     {deleting ? "Deleting…" : "Yes, Delete"}

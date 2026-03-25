@@ -98,6 +98,17 @@ export async function login(email: string, password: string) {
     return handleResponse(res);
 }
 
+// ──────────────────────────────
+// Profile
+// ──────────────────────────────
+
+export async function getProfile() {
+    const res = await apiFetch("/profile", {
+        headers: getHeaders(),
+    }, { noStore: true });
+    return handleResponse(res);
+}
+
 export async function generateOTP(email: string, action: string = "signup") {
     const res = await apiFetch("/auth/user/generate/otp", {
         method: "POST",
@@ -126,11 +137,28 @@ export async function verifyOTP(email: string, verificationCode: string) {
 // ──────────────────────────────
 
 export async function getOrganization() {
-    const res = await apiFetch("/organization", {
-        headers: getHeaders(),
-    }, { noStore: true });
-    const data = await handleResponse(res);
-    return { ok: true, status: res.status, ...data };
+    try {
+        const res = await apiFetch("/organization", {
+            headers: getHeaders(),
+        }, { noStore: true });
+
+        // Don't use handleResponse here — it throws on non-200.
+        // We need to gracefully distinguish "has org" from "no org".
+        let data;
+        try {
+            data = await res.json();
+        } catch {
+            data = null;
+        }
+
+        if (!res.ok) {
+            return { ok: false, status: res.status, ...(data || {}) };
+        }
+
+        return { ok: true, status: res.status, ...(data || {}) };
+    } catch {
+        return { ok: false, status: 0 };
+    }
 }
 
 export async function createOrganization(name: string, description: string) {

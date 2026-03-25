@@ -12,6 +12,7 @@ import {
     getUserName,
     isAuthenticated,
 } from "@/lib/api";
+import { useProjects } from "@/lib/ProjectsContext";
 import { useOrgGuard } from "@/lib/useOrgGuard";
 import { ArrowLeft, Loader2 } from "lucide-react";
 
@@ -22,6 +23,8 @@ export default function NewProjectPage() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showOrgSetup, setShowOrgSetup] = useState(false);
+
+    const { refresh } = useProjects();
 
     const email = getUserEmail();
     const fullName = getUserName();
@@ -56,6 +59,7 @@ export default function NewProjectPage() {
 
             if (result?.status === "success" || result?.data) {
                 // Success - redirect to project
+                await refresh();
                 const projectId = result?.data?.project?.id || result?.id || result?.data?.project?._id;
                 if (projectId) {
                     router.push(`/projects/${projectId}`);

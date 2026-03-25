@@ -11,6 +11,7 @@ import {
     getUserName,
     isAuthenticated,
 } from "@/lib/api";
+import { useProjects } from "@/lib/ProjectsContext";
 import {
     Eye,
     EyeOff,
@@ -31,6 +32,7 @@ function AddDeviceContent() {
     const searchParams = useSearchParams();
     const email = getUserEmail();
     const fullName = getUserName();
+    const { refresh } = useProjects();
 
     const urlProjectId = searchParams.get("projectId") || "";
 
@@ -83,6 +85,7 @@ function AddDeviceContent() {
                 return;
             }
             
+            await refresh();
             setSuccess(true);
             setTimeout(() => router.push(`/projects/${selectedProjectId}`), 1500);
         } catch (err: any) {

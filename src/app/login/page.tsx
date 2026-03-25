@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { login, saveToken, saveUserInfo } from "@/lib/api";
+import { login, saveToken, saveUserInfo, getProfile, getAllProjects, getProjectDevices, saveOrgConfirmed } from "@/lib/api";
 
 export default function LoginPage() {
     const router = useRouter();
@@ -34,15 +34,78 @@ export default function LoginPage() {
             if (result.success || result.data?.token) {
                 const token = result.data?.token || result.token;
                 if (token) saveToken(token);
-                if (result.data?.user) {
-                    saveUserInfo(result.data.user.email, result.data.user.name);
-                } else {
-                    // Fallback: derive name from email if backend doesn't return user object
+
+                try {
+                    // Fetch profile to get user info AND org status in one call
+                    const profileData = await getProfile();
+                    const profile = profileData?.data?.profile;
+                    
+                    if (profile) {
+                        saveUserInfo(profile.email, profile.name);
+                        
+                        if (profile.organization && profile.organization.id) {
+                            // User belongs to an org — prefetch projects for instant loading
+                            saveOrgConfirmed();
+                            try {
+                                const projectsResult = await getAllProjects();
+                                const projects = Array.isArray(projectsResult) 
+                                    ? projectsResult 
+                                    : (projectsResult?.data?.projects || projectsResult?.projects || projectsResult?.data || []);
+                                
+                                // Fetch devices for all projects concurrently
+                                const allDevices: any[] = [];
+                                const devicePromises = projects.map(async (p: any) => {
+                                    const pId = p.id || p._id;
+                                    if (!pId) return;
+                                    try {
+                                        const res = await getProjectDevices(pId);
+                                        const devs = res?.data?.devices || res?.devices || [];
+                                        for (const d of devs) {
+                                            const rawDevice = d?.device || d;
+                                            const serial = rawDevice.serial_no || rawDevice.serialNumber || rawDevice.id || rawDevice._id || "";
+                                            allDevices.push({
+                                                id: rawDevice.id || rawDevice._id || serial,
+                                                _id: rawDevice._id || rawDevice.id,
+                                                name: rawDevice.name || serial || "Unnamed",
+                                                serial_no: serial,
+                                                serialNumber: serial,
+                                                description: rawDevice.description,
+                                                projectName: p.name,
+                                                projectId: pId,
+                                            });
+                                        }
+                                    } catch (err) {
+                                        console.warn(`Failed to prefetch devices for project ${pId}`, err);
+                                    }
+                                });
+                                
+                                await Promise.allSettled(devicePromises);
+
+                                // Save to sessionStorage for ProjectsContext to consume
+                                sessionStorage.setItem("reflow_prefetch", JSON.stringify({
+                                    projects,
+                                    devices: allDevices,
+                                    fetchedAt: Date.now()
+                                }));
+                            } catch (prefetchErr) {
+                                console.warn("Background prefetch failed:", prefetchErr);
+                            }
+                            
+                            window.location.href = "/";
+                        } else {
+                            // No org
+                            window.location.href = "/?setup=org";
+                        }
+                    } else {
+                        throw new Error("Invalid profile data");
+                    }
+                } catch (profileErr) {
+                    console.error("Failed to fetch profile during login:", profileErr);
+                    // Fallback to basic info if profile fetch fails
                     const derivedName = email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
                     saveUserInfo(email.trim(), derivedName);
+                    window.location.href = "/?setup=org";
                 }
-                // Hard redirect to dashboard
-                window.location.href = "/?setup=org";
             } else {
                 const errorMsg =
                     result.message ||

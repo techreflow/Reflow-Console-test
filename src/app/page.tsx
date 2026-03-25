@@ -52,7 +52,7 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const [showOrgSetup, setShowOrgSetup] = useState(false);
   const { hasOrg, orgChecked } = useOrgGuard();
-  const { projects, devices, loading, error } = useProjects();
+  const { projects, devices, loading, error, refresh } = useProjects();
   const [mqttChecking, setMqttChecking] = useState(false);
   const [activeDevices, setActiveDevices] = useState(0);
 
@@ -113,7 +113,10 @@ function DashboardContent() {
       ? Math.round((stats.activeDevices / stats.totalDevices) * 100)
       : 0;
 
-  const handleOrgSetupComplete = () => setShowOrgSetup(false);
+  const handleOrgSetupComplete = () => {
+    setShowOrgSetup(false);
+    refresh();
+  };
 
   return (
     <>
