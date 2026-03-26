@@ -239,8 +239,11 @@ export default function AnalyticsPage() {
                 for (let i = 1; i <= channelCount; i++) {
                     const customName = String(cfg[`SNO${i}`] ?? `Channel ${i}`).trim();
                     mapping[`CH${i}`] = customName;
+                    mapping[`ch${i}`] = customName;
                     mapping[`RawCH${i}`] = customName;
                     mapping[`${i}`] = customName;
+                    mapping[`SNO${i}`] = customName;
+                    mapping[`sno${i}`] = customName;
                 }
                 setChannelConfig(mapping);
             } catch (err) {
