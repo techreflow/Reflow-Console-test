@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import DashboardLayout from "@/components/DashboardLayout";
-import { getUserEmail, getUserName, isAuthenticated, exportDeviceData } from "@/lib/api";
+import { getUserEmail, getUserName, isAuthenticated, exportDeviceData, getToken } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import { useMqttDevice, useMqttStatus } from "@/lib/useMqttDevice";
 import { CHART_CONFIG } from "@/config/constants";
@@ -95,6 +95,7 @@ export default function AnalyticsPage() {
     const [chartLoading, setChartLoading] = useState(false);
     const [chartError, setChartError] = useState("");
     const [channelKeys, setChannelKeys] = useState<string[]>([]);
+    const [channelConfig, setChannelConfig] = useState<Record<string, string>>({});
 
     // Chart options
     const [chartType, setChartType] = useState<ChartType>("Line");
@@ -216,6 +217,38 @@ export default function AnalyticsPage() {
     useEffect(() => {
         if (selectedDevice && startDate && endDate) fetchHistoricalData();
     }, [selectedDevice, startDate, endDate, fetchHistoricalData]);
+
+    // Load channel config to show human-readable names
+    useEffect(() => {
+        if (!selectedDevice) return;
+        const token = getToken();
+        async function loadConfig() {
+            try {
+                const res = await fetch(`/api/device-config?serialId=${selectedDevice}`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok) return;
+                const json = await res.json();
+                const cfg = json?.data?.config;
+                if (!cfg) return;
+
+                let channelCount = 0;
+                while (cfg[`SNO${channelCount + 1}`] !== undefined) channelCount++;
+                
+                const mapping: Record<string, string> = {};
+                for (let i = 1; i <= channelCount; i++) {
+                    const customName = String(cfg[`SNO${i}`] ?? `Channel ${i}`).trim();
+                    mapping[`CH${i}`] = customName;
+                    mapping[`RawCH${i}`] = customName;
+                    mapping[`${i}`] = customName;
+                }
+                setChannelConfig(mapping);
+            } catch (err) {
+                console.error("[Analytics] Failed to load device config for channel names:", err);
+            }
+        }
+        loadConfig();
+    }, [selectedDevice]);
 
     // Live MQTT polling — append to chartData
     useEffect(() => {
@@ -341,11 +374,11 @@ export default function AnalyticsPage() {
             }).sort((a,b) => new Date(a.time).getTime() - new Date(b.time).getTime());
         }
 
-        const headers = ["time", ...channelKeys];
+        const displayHeaders = ["time", ...channelKeys.map(k => channelConfig[k] || k)];
         const rows = exportData.map(row => 
-            headers.map(h => row[h] !== undefined ? row[h] : "").join(",")
+            ["time", ...channelKeys].map(h => row[h] !== undefined ? row[h] : "").join(",")
         );
-        const csv = [headers.join(","), ...rows].join("\n");
+        const csv = [displayHeaders.join(","), ...rows].join("\n");
         const blob = new Blob([csv], { type: "text/csv" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -438,13 +471,14 @@ export default function AnalyticsPage() {
                 contentStyle={{ backgroundColor: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px", fontSize: "12px" }}
                 formatter={(value: number, name: string) => [
                     `${value}${showDeviation ? "%" : ""}`,
-                    name
+                    channelConfig[name] || name
                 ]}
             />
         );
         const legend = (
             <Legend
                 onClick={(e) => toggleChannel(e.dataKey as string)}
+                formatter={(value) => channelConfig[value] || value}
                 wrapperStyle={{ cursor: "pointer", fontSize: "12px" }}
             />
         );
@@ -464,7 +498,7 @@ export default function AnalyticsPage() {
                 <BarChart {...sharedProps}>
                     {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                     {activeKeys.map((key, i) => (
-                        <Bar key={key} dataKey={key} fill={COLORS[i % COLORS.length]} opacity={0.85} radius={[3,3,0,0]} />
+                        <Bar key={key} dataKey={key} name={channelConfig[key] || key} fill={COLORS[i % COLORS.length]} opacity={0.85} radius={[3,3,0,0]} />
                     ))}
                 </BarChart>
             );
@@ -483,7 +517,7 @@ export default function AnalyticsPage() {
                     {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                     {activeKeys.map((key, i) => (
                         <Area
-                            key={key} type="monotone" dataKey={key}
+                            key={key} type="monotone" dataKey={key} name={channelConfig[key] || key}
                             stroke={COLORS[i % COLORS.length]} strokeWidth={2}
                             fill={`url(#ag-${key})`} dot={false} activeDot={{ r: 4 }}
                             isAnimationActive={false}
@@ -498,7 +532,7 @@ export default function AnalyticsPage() {
                 {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
                 {activeKeys.map((key, i) => (
                     <Line
-                        key={key} type="monotone" dataKey={key}
+                        key={key} type="monotone" dataKey={key} name={channelConfig[key] || key}
                         stroke={COLORS[i % COLORS.length]} strokeWidth={2}
                         dot={false} activeDot={{ r: 4 }}
                         isAnimationActive={false}
@@ -732,7 +766,7 @@ export default function AnalyticsPage() {
                                 }`}
                                 style={visibleChannels[key] ? { backgroundColor: COLORS[i % COLORS.length] } : {}}
                             >
-                                {key}
+                                {channelConfig[key] || key}
                             </button>
                         ))}
                         <button
@@ -772,7 +806,7 @@ export default function AnalyticsPage() {
                             <div key={s.key} className="rounded-xl bg-white border border-border-subtle p-3">
                                 <div className="flex items-center gap-1.5 mb-2">
                                     <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-                                    <p className="text-[10px] font-bold text-text-muted uppercase tracking-wider">{s.label}</p>
+                                    <p className="text-[10px] font-bold text-text-muted uppercase tracking-wider">{channelConfig[s.key] || s.label}</p>
                                 </div>
                                 <p className="text-lg font-black text-text-primary" style={{ color: s.color }}>
                                     {s.current !== null ? Number(s.current).toFixed(2) : "—"}
