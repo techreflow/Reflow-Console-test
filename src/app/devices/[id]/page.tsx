@@ -11,7 +11,7 @@ import {
 } from "recharts";
 import {
     RefreshCw, Play, Settings2, Radio, Cpu, Wifi,
-    Terminal, ArrowUp, Minus, Info, Save, ChevronDown,
+    Terminal, ArrowUp, Minus, Info, Save,
     TrendingUp, TrendingDown, Trash2, Download,
 } from "lucide-react";
 
@@ -99,10 +99,7 @@ export default function DeviceConfigPage() {
     const [loadingDevice, setLoadingDevice] = useState(true);
 
     // Config params
-    const [samplingRate, setSamplingRate] = useState(500);
-    const [tempThreshold, setTempThreshold] = useState(85.5);
     const [bufferSize, setBufferSize] = useState("512 KB");
-    const [transmissionInterval, setTransmissionInterval] = useState(10);
     const [savingConfig, setSavingConfig] = useState(false);
     const [configSaved, setConfigSaved] = useState(false);
     const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
@@ -391,27 +388,12 @@ export default function DeviceConfigPage() {
 
                             <div className="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-8">
                                 {/* Global params */}
-                                <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
-                                    <div>
-                                        <label className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-1.5 block">Sampling Rate (ms)</label>
-                                        <input type="number" value={samplingRate} onChange={(e) => setSamplingRate(Number(e.target.value))} className="w-full px-3 py-2 rounded-lg border border-border-subtle bg-white text-sm focus:border-primary outline-none" />
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-1.5 block">Temp Threshold (°C)</label>
-                                        <input type="number" step={0.1} value={tempThreshold} onChange={(e) => setTempThreshold(Number(e.target.value))} className="w-full px-3 py-2 rounded-lg border border-border-subtle bg-white text-sm focus:border-primary outline-none" />
-                                    </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-1 gap-6">
                                     <div>
                                         <label className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-1.5 block">Buffer Size</label>
                                         <select value={bufferSize} onChange={(e) => setBufferSize(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-border-subtle bg-white text-sm focus:border-primary outline-none cursor-pointer">
                                             <option>128 KB</option><option>256 KB</option><option>512 KB</option><option>1 MB</option>
                                         </select>
-                                    </div>
-                                    <div>
-                                        <label className="text-xs font-bold text-text-secondary uppercase tracking-wider mb-1.5 block">Transmission Interval</label>
-                                        <div className="flex items-center gap-3">
-                                            <input type="range" min={1} max={60} value={transmissionInterval} onChange={(e) => setTransmissionInterval(Number(e.target.value))} className="w-full h-2 bg-border-subtle rounded-lg appearance-none accent-primary" />
-                                            <span className="text-sm font-bold w-8 text-right">{transmissionInterval}s</span>
-                                        </div>
                                     </div>
                                 </div>
 

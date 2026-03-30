@@ -17,6 +17,7 @@ import {
   getUserEmail,
   getUserName,
   isAuthenticated,
+  isOwnerProject,
 } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import { useOrgGuard } from "@/lib/useOrgGuard";
@@ -102,10 +103,19 @@ function DashboardContent() {
     totalProjects: projects.length,
     totalDevices: devices.length,
     activeDevices,
-    sharedProjects: projects.filter(
-      (p) => p.createdBy?.email !== getUserEmail()
-    ).length,
+    ownedProjects: projects.filter((p) => isOwnerProject(p, getUserEmail())).length,
+    sharedProjects: projects.filter((p) => !isOwnerProject(p, getUserEmail())).length,
   }), [projects, devices, activeDevices]);
+
+  const recentProjects = useMemo(() => {
+    return [...projects]
+      .sort((a: any, b: any) => {
+        const bTs = new Date(b?.updatedAt || b?.createdAt || 0).getTime();
+        const aTs = new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+        return bTs - aTs;
+      })
+      .slice(0, 4);
+  }, [projects]);
 
   const firstName = userName?.split(" ")[0] || "User";
   const uptimePct =
@@ -173,7 +183,7 @@ function DashboardContent() {
               <StatCard
                 title="Total Projects"
                 value={stats.totalProjects}
-                change={`${stats.totalProjects} owned`}
+                change={`${stats.ownedProjects} owned`}
                 changeType="positive"
                 icon={FolderOpen}
                 iconColor="text-blue-600"
@@ -250,7 +260,7 @@ function DashboardContent() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {projects.slice(0, 4).map((project, index) => (
+                  {recentProjects.map((project, index) => (
                     <ProjectCard
                       key={project.id || project._id}
                       project={{ ...project, _id: project.id || project._id || "" }}

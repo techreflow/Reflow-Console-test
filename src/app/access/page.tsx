@@ -16,6 +16,8 @@ import {
     getAllProjects,
     shareProject,
     isAuthenticated,
+    isOwnerProject,
+    normalizeProjectsResponse,
 } from "@/lib/api";
 import {
     UserPlus, Trash2, ChevronDown, AtSign, RefreshCw,
@@ -29,6 +31,7 @@ interface Member {
     email: string;
     role: string;
     joinedAt?: string;
+    projects?: { id?: string; name: string }[];
 }
 
 interface OrgActivity {
@@ -43,6 +46,8 @@ interface Project {
     id?: string;
     _id?: string;
     name: string;
+    accessLevel?: string;
+    createdBy?: { email?: string };
 }
 
 const ROLE_COLORS: Record<string, string> = {
@@ -72,6 +77,37 @@ function hashIdx(str: string): number {
     let h = 0;
     for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
     return Math.abs(h);
+}
+
+function normalizeMemberProjects(value: unknown): { id?: string; name: string }[] {
+    if (!Array.isArray(value)) return [];
+
+    return value
+        .map((entry) => {
+            if (typeof entry === "string") return { name: entry };
+            if (!entry || typeof entry !== "object") return null;
+
+            const project = entry as Record<string, unknown>;
+            const nestedProject =
+                project.project && typeof project.project === "object"
+                    ? (project.project as Record<string, unknown>)
+                    : null;
+
+            const name = String(
+                project.name ||
+                project.projectName ||
+                nestedProject?.name ||
+                ""
+            ).trim();
+
+            if (!name) return null;
+
+            return {
+                id: String(project.id || project._id || project.projectId || nestedProject?.id || nestedProject?._id || ""),
+                name,
+            };
+        })
+        .filter((project): project is { id?: string; name: string } => Boolean(project));
 }
 
 // ─── Toast component ─────────────────────────────────────────────────────────
@@ -108,6 +144,7 @@ export default function AccessPage() {
     const [members, setMembers] = useState<Member[]>([]);
     const [activities, setActivities] = useState<OrgActivity[]>([]);
     const [projects, setProjects] = useState<Project[]>([]);
+    const [ownedProjectCount, setOwnedProjectCount] = useState(0);
 
     // Invite form
     const [inviteEmail, setInviteEmail] = useState("");
@@ -147,12 +184,16 @@ export default function AccessPage() {
                     _id?: string; id?: string; name?: string;
                     email?: string; user?: { name?: string; email?: string };
                     role?: string; joinedAt?: string; createdAt?: string;
+                    projects?: unknown; memberProjects?: unknown; projectAccess?: unknown; accessibleProjects?: unknown;
                 }) => ({
                     id: m._id || m.id || m.user?.email || m.email || String(Math.random()),
                     name: m.name || m.user?.name,
                     email: m.email || m.user?.email || "",
                     role: (m.role || "MEMBER").toUpperCase(),
                     joinedAt: m.joinedAt || m.createdAt,
+                    projects: normalizeMemberProjects(
+                        m.projects || m.memberProjects || m.projectAccess || m.accessibleProjects || []
+                    ),
                 }))
             );
 
@@ -161,10 +202,19 @@ export default function AccessPage() {
             setActivities(Array.isArray(acts) ? acts.slice(0, 10) : []);
 
             // Projects
-            const projs: Project[] = projData?.data?.projects || projData?.projects || [];
-            setProjects(projs);
-            if (projs.length > 0 && !selectedProjectId) {
-                setSelectedProjectId(projs[0].id || projs[0]._id || "");
+            const normalizedProjects = normalizeProjectsResponse(projData);
+            const allProjects = normalizedProjects.projects as Project[];
+            const shareableProjects = allProjects.filter((project) => isOwnerProject(project, email || ""));
+            const inviteProjects = shareableProjects.length > 0 ? shareableProjects : allProjects;
+
+            setProjects(inviteProjects);
+            setOwnedProjectCount(
+                normalizedProjects.stats.createdByMeCount ||
+                allProjects.filter((project) => isOwnerProject(project, email || "")).length
+            );
+
+            if (inviteProjects.length > 0 && !selectedProjectId) {
+                setSelectedProjectId(inviteProjects[0].id || inviteProjects[0]._id || "");
             }
         } catch (err) {
             console.error("Failed to load access data:", err);
@@ -234,6 +284,20 @@ export default function AccessPage() {
         m.email === email && ["OWNER", "ADMIN"].includes(m.role)
     );
 
+    if (loading) {
+        return (
+            <DashboardLayout
+                title="Access"
+                breadcrumbs={[{ label: "Dashboard", href: "/" }, { label: "Organisation Access" }]}
+                user={{ name: fullName || "", email: email || "" }}
+            >
+                <div className="py-16">
+                    <LogoLoader text="Loading access data..." />
+                </div>
+            </DashboardLayout>
+        );
+    }
+
     return (
         <DashboardLayout
             title="Access"
@@ -266,7 +330,7 @@ export default function AccessPage() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                     {[
                         { label: "Total Members", value: members.length, icon: <Users className="w-5 h-5 text-blue-500" />, bg: "bg-blue-50 border-blue-100" },
-                        { label: "Owned Projects", value: projects.length, icon: <Shield className="w-5 h-5 text-violet-500" />, bg: "bg-violet-50 border-violet-100" },
+                        { label: "Owned Projects", value: ownedProjectCount, icon: <Shield className="w-5 h-5 text-violet-500" />, bg: "bg-violet-50 border-violet-100" },
                         { label: "Recent Activity", value: activities.length, icon: <Activity className="w-5 h-5 text-emerald-500" />, bg: "bg-emerald-50 border-emerald-100" },
                     ].map(card => (
                         <motion.div key={card.label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
@@ -367,8 +431,8 @@ export default function AccessPage() {
                     </div>
 
                     {/* Col headers */}
-                    <div className="grid grid-cols-[1.5fr_1.8fr_0.8fr_1fr_0.5fr] gap-4 px-6 py-2.5 bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wide">
-                        <span>Name</span><span>Email</span><span>Role</span><span>Joined</span><span></span>
+                    <div className="grid grid-cols-[1.3fr_1.7fr_0.8fr_1.4fr_1fr_0.5fr] gap-4 px-6 py-2.5 bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                        <span>Name</span><span>Email</span><span>Role</span><span>Projects</span><span>Joined</span><span></span>
                     </div>
 
                     {members.length === 0 ? (
@@ -382,7 +446,7 @@ export default function AccessPage() {
                     ) : (
                         members.map((member, i) => (
                             <motion.div key={member.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
-                                className="grid grid-cols-[1.5fr_1.8fr_0.8fr_1fr_0.5fr] gap-4 items-center px-6 py-3.5 border-b border-slate-50 last:border-0 hover:bg-slate-50/70 transition-colors group">
+                                className="grid grid-cols-[1.3fr_1.7fr_0.8fr_1.4fr_1fr_0.5fr] gap-4 items-center px-6 py-3.5 border-b border-slate-50 last:border-0 hover:bg-slate-50/70 transition-colors group">
                                 {/* Name + avatar */}
                                 <div className="flex items-center gap-3 min-w-0">
                                     <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${AVATAR_COLORS[hashIdx(member.email) % AVATAR_COLORS.length]} flex items-center justify-center flex-shrink-0`}>
@@ -417,6 +481,27 @@ export default function AccessPage() {
                                         {member.role}
                                     </span>
                                 )}
+
+                                <div className="flex flex-wrap gap-1">
+                                    {(member.projects || []).length > 0 ? (
+                                        (member.projects || []).slice(0, 2).map((project) => (
+                                            <span
+                                                key={`${member.id}-${project.id || project.name}`}
+                                                className="inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold"
+                                                title={project.name}
+                                            >
+                                                {project.name}
+                                            </span>
+                                        ))
+                                    ) : (
+                                        <span className="text-xs text-slate-400">No project access</span>
+                                    )}
+                                    {(member.projects || []).length > 2 && (
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-200 text-slate-600 text-[10px] font-semibold">
+                                            +{(member.projects || []).length - 2}
+                                        </span>
+                                    )}
+                                </div>
 
                                 <span className="text-xs text-slate-400">
                                     {member.joinedAt ? new Date(member.joinedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}

@@ -8,6 +8,7 @@ import {
     getUserEmail,
     getUserName,
     isAuthenticated,
+    isOwnerProject,
 } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import {
@@ -81,7 +82,7 @@ export default function SharedAccessPage() {
 
         // Projects I own (for share dropdown)
         const owned = cachedProjects
-            .filter((p: any) => p.createdBy?.email === userEmail)
+            .filter((p: any) => isOwnerProject(p, userEmail))
             .map((p: any) => ({
                 id: p.id || p._id,
                 name: p.name,
@@ -94,17 +95,18 @@ export default function SharedAccessPage() {
 
         // Projects shared with me
         const shared = cachedProjects
-            .filter((p: any) => p.createdBy?.email !== userEmail)
+            .filter((p: any) => !isOwnerProject(p, userEmail))
             .map((p: any) => {
                 const myMembership = p.members?.find(
                     (m: any) => m.user?.email === userEmail
                 );
+                const accessRole = typeof p.accessLevel === "string" ? p.accessLevel : "Viewer";
                 return {
                     id: p.id || p._id,
                     name: p.name,
                     owner: p.createdBy?.name || "Unknown",
                     ownerEmail: p.createdBy?.email || "",
-                    role: (myMembership?.role || "Viewer") as SharedProject["role"],
+                    role: (myMembership?.role || accessRole) as SharedProject["role"],
                     devices: p.devices?.length || 0,
                     updatedAgo: "Recently",
                 };

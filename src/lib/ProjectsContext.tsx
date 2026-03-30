@@ -5,6 +5,7 @@ import {
     getAllProjects,
     getProjectDevices,
     isAuthenticated,
+    normalizeProjectsResponse,
 } from "@/lib/api";
 
 // ── Types ────────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ interface Project {
     createdBy?: { name?: string; email?: string };
     members?: { user?: { email?: string; name?: string }; role?: string }[];
     accessLevel?: string;
+    createdAt?: string;
     updatedAt?: string;
 }
 
@@ -73,9 +75,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
             console.time("[Cache] fetchAll");
 
             const data = await getAllProjects();
-            const projectList: Project[] = Array.isArray(data)
-                ? data
-                : (data?.data?.projects || data?.projects || data?.data || []);
+            const projectList = normalizeProjectsResponse(data).projects as Project[];
 
             // If projects already have devices nested, use them directly.
             // Otherwise fetch devices per project concurrently.
@@ -156,9 +156,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
             try {
                 await new Promise((r) => setTimeout(r, 2000));
                 const data = await getAllProjects();
-                const projectList: Project[] = Array.isArray(data)
-                    ? data
-                    : (data?.data?.projects || data?.projects || data?.data || []);
+                const projectList = normalizeProjectsResponse(data).projects as Project[];
                 setProjects(projectList);
                 setLastFetched(Date.now());
                 console.log("[Cache] Retry succeeded");

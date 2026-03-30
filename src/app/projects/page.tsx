@@ -8,6 +8,7 @@ import ProjectCard from "@/components/ProjectCard";
 import {
   getUserEmail,
   getUserName,
+  isOwnerProject,
 } from "@/lib/api";
 import { useOrgGuard } from "@/lib/useOrgGuard";
 import { useProjects } from "@/lib/ProjectsContext";
@@ -26,14 +27,10 @@ export default function ProjectsPage() {
 
   const { ownProjects, sharedProjects } = useMemo(() => {
     const userEmail = getUserEmail();
-    const owned = projects.filter(
-      (p) => p.accessLevel === "owner" || p.createdBy?.email === userEmail
-    );
-    const shared = projects.filter(
-      (p) => p.accessLevel !== "owner" && p.createdBy?.email !== userEmail
-    );
+    const owned = projects.filter((p) => isOwnerProject(p, userEmail));
+    const shared = projects.filter((p) => !isOwnerProject(p, userEmail));
     return {
-      ownProjects: owned.length > 0 ? owned : projects,
+      ownProjects: owned,
       sharedProjects: shared,
     };
   }, [projects]);

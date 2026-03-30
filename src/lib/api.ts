@@ -69,6 +69,109 @@ async function handleResponse(res: Response) {
     return data;
 }
 
+export interface ProjectRecord {
+    id?: string;
+    _id?: string;
+    name?: string;
+    accessLevel?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    createdBy?: { name?: string; email?: string };
+    [key: string]: unknown;
+}
+
+interface ProjectStats {
+    createdByMeCount: number;
+    sharedWithMeCount: number;
+    totalProjects: number;
+}
+
+export interface NormalizedProjectsPayload {
+    projects: ProjectRecord[];
+    createdByMe: ProjectRecord[];
+    sharedWithMe: ProjectRecord[];
+    stats: ProjectStats;
+}
+
+function toProjectArray(value: unknown): ProjectRecord[] {
+    return Array.isArray(value) ? (value as ProjectRecord[]) : [];
+}
+
+function dedupeProjects(projects: ProjectRecord[]): ProjectRecord[] {
+    const seen = new Set<string>();
+    const deduped: ProjectRecord[] = [];
+
+    for (const project of projects) {
+        const id = String(project.id || project._id || project.name || Math.random());
+        if (seen.has(id)) continue;
+        seen.add(id);
+        deduped.push(project);
+    }
+
+    return deduped;
+}
+
+export function isOwnerProject(
+    project: { accessLevel?: string; createdBy?: { email?: string } },
+    userEmail?: string
+) {
+    const access = (project.accessLevel || "").toLowerCase();
+    if (access === "owner") return true;
+    if (!userEmail) return false;
+    return (project.createdBy?.email || "").toLowerCase() === userEmail.toLowerCase();
+}
+
+export function normalizeProjectsResponse(payload: unknown): NormalizedProjectsPayload {
+    const root = (payload && typeof payload === "object") ? (payload as Record<string, unknown>) : {};
+    const data = (root.data && typeof root.data === "object") ? (root.data as Record<string, unknown>) : null;
+
+    const projectsNode = data?.projects ?? root.projects ?? data ?? payload;
+    const projectsObject =
+        projectsNode && typeof projectsNode === "object" && !Array.isArray(projectsNode)
+            ? (projectsNode as Record<string, unknown>)
+            : null;
+
+    let createdByMe: ProjectRecord[] = [];
+    let sharedWithMe: ProjectRecord[] = [];
+    let flatProjects: ProjectRecord[] = [];
+
+    if (Array.isArray(projectsNode)) {
+        flatProjects = toProjectArray(projectsNode);
+    } else if (projectsObject) {
+        createdByMe = toProjectArray(projectsObject.createdByMe);
+        sharedWithMe = toProjectArray(projectsObject.sharedWithMe);
+
+        if (createdByMe.length || sharedWithMe.length) {
+            flatProjects = [...createdByMe, ...sharedWithMe];
+        } else if (Array.isArray(projectsObject.projects)) {
+            flatProjects = toProjectArray(projectsObject.projects);
+        }
+    }
+
+    const projects = dedupeProjects(flatProjects);
+
+    if (!createdByMe.length && !sharedWithMe.length) {
+        createdByMe = projects.filter((project) => (project.accessLevel || "").toLowerCase() === "owner");
+        sharedWithMe = projects.filter((project) => (project.accessLevel || "").toLowerCase() !== "owner");
+    }
+
+    const statsNode =
+        (projectsObject?.stats && typeof projectsObject.stats === "object")
+            ? (projectsObject.stats as Record<string, unknown>)
+            : null;
+
+    return {
+        projects,
+        createdByMe,
+        sharedWithMe,
+        stats: {
+            createdByMeCount: Number(statsNode?.createdByMeCount ?? createdByMe.length),
+            sharedWithMeCount: Number(statsNode?.sharedWithMeCount ?? sharedWithMe.length),
+            totalProjects: Number(statsNode?.totalProjects ?? projects.length),
+        },
+    };
+}
+
 // ──────────────────────────────
 // Auth
 // ──────────────────────────────
@@ -99,6 +202,19 @@ export async function getProfile() {
     const res = await apiFetch("/profile", {
         headers: getHeaders(),
     }, { noStore: true });
+    return handleResponse(res);
+}
+
+export async function updateUserPassword(payload: {
+    verificationCode: string;
+    newPassword: string;
+    confirmPassword: string;
+}) {
+    const res = await apiFetch("/profile/update/password", {
+        method: "PUT",
+        headers: getHeaders(),
+        body: JSON.stringify(payload),
+    });
     return handleResponse(res);
 }
 

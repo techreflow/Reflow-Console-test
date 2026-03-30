@@ -7,6 +7,7 @@ import {
     getUserEmail,
     getUserName,
     getProfile,
+    updateUserPassword,
     isAuthenticated,
 } from "@/lib/api";
 import {
@@ -34,6 +35,10 @@ export default function SettingsPage() {
     const [orgRole, setOrgRole] = useState("Member");
     const [saving, setSaving] = useState(false);
     const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
+    const [verificationCode, setVerificationCode] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [updatingPassword, setUpdatingPassword] = useState(false);
 
     // For sidebar/header
     const fallbackName = getUserName();
@@ -78,6 +83,42 @@ export default function SettingsPage() {
             setToast({ msg: "Failed to save changes", ok: false });
         } finally {
             setSaving(false);
+            setTimeout(() => setToast(null), 3500);
+        }
+    };
+
+    const handlePasswordUpdate = async () => {
+        setToast(null);
+
+        if (!verificationCode.trim() || !newPassword || !confirmPassword) {
+            setToast({ msg: "Verification code, new password and confirm password are required.", ok: false });
+            return;
+        }
+        if (newPassword.length < 6) {
+            setToast({ msg: "New password must be at least 6 characters.", ok: false });
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            setToast({ msg: "New password and confirm password do not match.", ok: false });
+            return;
+        }
+
+        setUpdatingPassword(true);
+        try {
+            await updateUserPassword({
+                verificationCode: verificationCode.trim(),
+                newPassword,
+                confirmPassword,
+            });
+            setToast({ msg: "Password updated successfully.", ok: true });
+            setVerificationCode("");
+            setNewPassword("");
+            setConfirmPassword("");
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : "Failed to update password.";
+            setToast({ msg: message, ok: false });
+        } finally {
+            setUpdatingPassword(false);
             setTimeout(() => setToast(null), 3500);
         }
     };
@@ -391,20 +432,56 @@ export default function SettingsPage() {
                                     </p>
                                 </div>
 
+                                {toast && (
+                                    <div className={`flex items-center gap-2 px-4 py-3 rounded-lg text-sm font-medium ${toast.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                                        {toast.ok ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
+                                        {toast.msg}
+                                    </div>
+                                )}
+
                                 <div className="space-y-4">
                                     <div className="p-4 rounded-xl border border-border-subtle">
-                                        <div className="flex items-center justify-between">
+                                        <div className="space-y-4">
                                             <div>
                                                 <p className="text-sm font-medium text-text-primary">
-                                                    Password
+                                                    Change Password
                                                 </p>
                                                 <p className="text-xs text-text-muted mt-0.5">
-                                                    Last changed 30 days ago
+                                                    Uses authenticated route `/v1/profile/update/password` with your Bearer token.
                                                 </p>
                                             </div>
-                                            <button className="px-4 py-2 rounded-lg border border-border-subtle text-sm font-medium text-text-secondary hover:bg-surface-muted transition-colors">
-                                                Change Password
-                                            </button>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                <input
+                                                    type="text"
+                                                    value={verificationCode}
+                                                    onChange={(e) => setVerificationCode(e.target.value)}
+                                                    placeholder="Verification code"
+                                                    className="w-full px-3 py-2.5 rounded-lg border border-border-subtle bg-white text-sm text-text-primary focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                                                />
+                                                <input
+                                                    type="password"
+                                                    value={newPassword}
+                                                    onChange={(e) => setNewPassword(e.target.value)}
+                                                    placeholder="New password"
+                                                    className="w-full px-3 py-2.5 rounded-lg border border-border-subtle bg-white text-sm text-text-primary focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                                                />
+                                                <input
+                                                    type="password"
+                                                    value={confirmPassword}
+                                                    onChange={(e) => setConfirmPassword(e.target.value)}
+                                                    placeholder="Confirm password"
+                                                    className="w-full px-3 py-2.5 rounded-lg border border-border-subtle bg-white text-sm text-text-primary focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                                                />
+                                            </div>
+                                            <div className="flex justify-end">
+                                                <button
+                                                    onClick={handlePasswordUpdate}
+                                                    disabled={updatingPassword}
+                                                    className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-60"
+                                                >
+                                                    {updatingPassword ? "Updating..." : "Update Password"}
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
 

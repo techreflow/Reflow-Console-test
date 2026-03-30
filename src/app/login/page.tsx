@@ -5,10 +5,11 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { login, saveToken, getProfile } from "@/lib/api";
+import { generateOTP, login, saveToken, getProfile } from "@/lib/api";
 
 export default function LoginPage() {
     const router = useRouter();
+    const [loginMode, setLoginMode] = useState<"password" | "otp">("password");
     const [showPassword, setShowPassword] = useState(false);
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
@@ -21,51 +22,60 @@ export default function LoginPage() {
         setLoading(true);
 
         try {
-            if (!email.trim() || !password) {
-                setError("Please enter both email and password.");
+            if (!email.trim()) {
+                setError("Please enter your email.");
                 setLoading(false);
                 return;
             }
 
-            console.log("Attempting login with:", email);
-            const result = await login(email.trim(), password);
-            console.log("Login result:", result);
+            if (loginMode === "otp") {
+                const result = await generateOTP(email.trim(), "login");
+                const isSuccess =
+                    result?.success ||
+                    (typeof result?.message === "string" && result.message.toLowerCase().includes("otp")) ||
+                    (typeof result?.status === "string" && result.status.toLowerCase() === "success");
 
-            if (result.success || result.data?.token) {
-                const token = result.data?.token || result.token;
-                if (token) saveToken(token);
-
-                try {
-                    // Fetch profile to get user info AND org status in one call
-                    const profileData = await getProfile();
-                    const profile = profileData?.data?.profile;
-                    
-                    if (profile) {
-                        if (profile.organization && profile.organization.id) {
-                            // User belongs to an org
-                            
-                            window.location.href = "/";
-                        } else {
-                            // No org
-                            window.location.href = "/?setup=org";
-                        }
-                    } else {
-                        throw new Error("Invalid profile data");
-                    }
-                } catch (profileErr) {
-                    console.error("Failed to fetch profile during login:", profileErr);
-                    window.location.href = "/?setup=org";
+                if (isSuccess) {
+                    router.push(`/verify-otp?email=${encodeURIComponent(email.trim())}&action=login`);
+                } else {
+                    const errorMsg =
+                        result.message ||
+                        result.error ||
+                        "Failed to send OTP. Please check your email and try again.";
+                    setError(errorMsg);
                 }
             } else {
-                const errorMsg =
-                    result.message ||
-                    result.error ||
-                    "Login failed. Please check your credentials.";
-                setError(errorMsg);
+                if (!password) {
+                    setError("Please enter your password.");
+                    setLoading(false);
+                    return;
+                }
+
+                const result = await login(email.trim(), password);
+                const token = result?.data?.token || result?.token;
+                if (!token) {
+                    setError(result?.message || result?.error || "Login failed. Please check your credentials.");
+                    setLoading(false);
+                    return;
+                }
+
+                saveToken(token);
+
+                try {
+                    const profileData = await getProfile();
+                    const profile = profileData?.data?.profile;
+                    if (profile?.organization?.id) {
+                        window.location.href = "/";
+                    } else {
+                        window.location.href = "/?setup=org";
+                    }
+                } catch {
+                    window.location.href = "/?setup=org";
+                }
             }
-        } catch (err: any) {
-            console.error("Login error:", err);
-            setError(err.message || "Could not connect to the server. Please try again.");
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : "Could not connect to the server. Please try again.";
+            setError(message);
         } finally {
             setLoading(false);
         }
@@ -131,7 +141,9 @@ export default function LoginPage() {
                                 transition={{ delay: 0.6, duration: 0.6 }}
                             />
                             <p className="text-gray-700 mb-8 text-lg">
-                                Fill in the details to login
+                                {loginMode === "otp"
+                                    ? "Enter your email to receive a login OTP"
+                                    : "Login with your email and password"}
                             </p>
                         </motion.div>
 
@@ -144,6 +156,27 @@ export default function LoginPage() {
                                 <p className="font-semibold">{error}</p>
                             </motion.div>
                         )}
+
+                        <div className="mb-6 inline-flex rounded-xl bg-slate-100 p-1 text-sm">
+                            <button
+                                type="button"
+                                onClick={() => setLoginMode("password")}
+                                className={`px-4 py-1.5 rounded-lg font-semibold transition-colors ${
+                                    loginMode === "password" ? "bg-blue-600 text-white" : "text-slate-600 hover:text-slate-800"
+                                }`}
+                            >
+                                Password
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setLoginMode("otp")}
+                                className={`px-4 py-1.5 rounded-lg font-semibold transition-colors ${
+                                    loginMode === "otp" ? "bg-blue-600 text-white" : "text-slate-600 hover:text-slate-800"
+                                }`}
+                            >
+                                OTP
+                            </button>
+                        </div>
 
                         <form className="space-y-6" onSubmit={handleLogin}>
                             <motion.div
@@ -164,72 +197,49 @@ export default function LoginPage() {
                                 />
                             </motion.div>
 
-                            <motion.div
-                                initial={{ y: 20, opacity: 0 }}
-                                animate={{ y: 0, opacity: 1 }}
-                                transition={{ delay: 0.6 }}
-                            >
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                    Password
-                                </label>
-                                <div className="relative">
-                                    <motion.input
-                                        type={showPassword ? "text" : "password"}
-                                        placeholder="Enter your password"
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        className="w-full px-4 py-3 rounded-xl bg-white/80 backdrop-blur-sm border-2 border-blue-100 focus:border-blue-500 focus:outline-none transition-all duration-300 text-gray-800 placeholder-gray-400 pr-12"
-                                        whileFocus={{ scale: 1.02 }}
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowPassword(!showPassword)}
-                                        className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-blue-600 transition-colors"
-                                    >
-                                        {showPassword ? (
-                                            <svg
-                                                className="w-5 h-5"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                viewBox="0 0 24 24"
-                                            >
-                                                <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth={2}
-                                                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                                />
-                                                <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth={2}
-                                                    d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                                                />
-                                            </svg>
-                                        ) : (
-                                            <svg
-                                                className="w-5 h-5"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                viewBox="0 0 24 24"
-                                            >
-                                                <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth={2}
-                                                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
-                                                />
-                                            </svg>
-                                        )}
-                                    </button>
-                                </div>
-                            </motion.div>
+                            {loginMode === "password" && (
+                                <motion.div
+                                    initial={{ y: 20, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    transition={{ delay: 0.55 }}
+                                >
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                                        Password
+                                    </label>
+                                    <div className="relative">
+                                        <motion.input
+                                            type={showPassword ? "text" : "password"}
+                                            placeholder="Enter your password"
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            className="w-full px-4 py-3 rounded-xl bg-white/80 backdrop-blur-sm border-2 border-blue-100 focus:border-blue-500 focus:outline-none transition-all duration-300 text-gray-800 placeholder-gray-400 pr-12"
+                                            whileFocus={{ scale: 1.02 }}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPassword(!showPassword)}
+                                            className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-blue-600 transition-colors"
+                                        >
+                                            {showPassword ? (
+                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                </svg>
+                                            ) : (
+                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                                </svg>
+                                            )}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
 
                             <motion.div
                                 className="text-right"
                                 initial={{ y: 20, opacity: 0 }}
                                 animate={{ y: 0, opacity: 1 }}
-                                transition={{ delay: 0.7 }}
+                                transition={{ delay: 0.6 }}
                             >
                                 <Link
                                     href="/forgot-password"
@@ -268,11 +278,11 @@ export default function LoginPage() {
                                                     d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                                                 ></path>
                                             </svg>
-                                            Logging in...
+                                            {loginMode === "otp" ? "Sending OTP..." : "Logging in..."}
                                         </>
                                     ) : (
                                         <>
-                                            Login
+                                            {loginMode === "otp" ? "Send OTP" : "Login"}
                                             <svg
                                                 className="w-5 h-5"
                                                 fill="none"

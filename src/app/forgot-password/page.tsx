@@ -34,7 +34,7 @@ export default function ForgotPasswordPage() {
                 (result.message && result.message.toLowerCase().includes("success"));
 
             if (isSuccess) {
-                window.location.href = `/verify-otp?email=${encodeURIComponent(email)}`;
+                window.location.href = `/verify-otp?email=${encodeURIComponent(email)}&action=reset`;
             } else {
                 setError(result.message || "Failed to send OTP. Please try again.");
             }

@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { useProjects } from "@/lib/ProjectsContext";
-import { getUserEmail } from "@/lib/api";
+import { getUserEmail, isOwnerProject } from "@/lib/api";
 
 const roleStyles: Record<string, string> = {
     Editor: "badge-editor",
@@ -24,17 +24,18 @@ export default function SharedWidget() {
     const sharedProjects = useMemo(() => {
         const userEmail = getUserEmail();
         return projects
-            .filter((p) => p.createdBy?.email !== userEmail)
+            .filter((p) => !isOwnerProject(p, userEmail))
             .map((p) => {
                 const myMembership = p.members?.find(
                     (m: any) => m.user?.email === userEmail
                 );
+                const fallbackRole = typeof p.accessLevel === "string" ? p.accessLevel : "Viewer";
                 return {
                     id: p.id || p._id || "",
                     name: p.name,
                     owner: p.createdBy?.name || "Unknown",
-                    role: (myMembership?.role || "Viewer").charAt(0).toUpperCase() +
-                          (myMembership?.role || "Viewer").slice(1).toLowerCase(),
+                    role: (myMembership?.role || fallbackRole).charAt(0).toUpperCase() +
+                          (myMembership?.role || fallbackRole).slice(1).toLowerCase(),
                 };
             });
     }, [projects]);

@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import DashboardLayout from "@/components/DashboardLayout";
 import {
     deleteProject,
-    getUserEmail, getUserName, isAuthenticated,
+    getUserEmail, getUserName, isAuthenticated, isOwnerProject,
 } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import { useMqttStatus } from "@/lib/useMqttDevice";
@@ -66,7 +66,7 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
     }, [projects, projectId]);
 
     const projectName = project?.name || "Project";
-    const isOwner = project?.accessLevel === "owner" || project?.createdBy?.email === email;
+    const isOwner = project ? isOwnerProject(project, email) : false;
 
     // Get devices for this project from cache
     const devices = useMemo(() => {

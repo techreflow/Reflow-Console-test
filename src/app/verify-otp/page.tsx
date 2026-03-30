@@ -4,8 +4,8 @@ import React, { useState, useRef, useEffect, Suspense } from "react";
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { verifyOTP, generateOTP, saveToken, saveUserInfo } from "@/lib/api";
+import { useSearchParams } from "next/navigation";
+import { verifyOTP, generateOTP, saveToken, getProfile } from "@/lib/api";
 
 export default function VerifyOTPPage() {
     return (
@@ -26,9 +26,9 @@ export default function VerifyOTPPage() {
 }
 
 function VerifyOTPContent() {
-    const router = useRouter();
     const searchParams = useSearchParams();
     const email = searchParams.get("email");
+    const action = searchParams.get("action") || "signup";
 
     const [otp, setOtp] = useState<string[]>(Array(6).fill(""));
     const [loading, setLoading] = useState(false);
@@ -92,10 +92,19 @@ function VerifyOTPContent() {
             if (isSuccess) {
                 const token = result.data?.token || result.token;
                 if (token) saveToken(token);
-                if (result.data?.user) {
-                    saveUserInfo(result.data.user.email, result.data.user.name);
+
+                let target = "/?setup=org";
+                try {
+                    const profileData = await getProfile();
+                    const profile = profileData?.data?.profile;
+                    if (profile?.organization?.id) {
+                        target = "/";
+                    }
+                } catch {
+                    // Keep fallback route.
                 }
-                window.location.href = "/?setup=org";
+
+                window.location.href = target;
             } else {
                 setError(result.message || result.error || "Verification failed. Please check your OTP.");
             }
@@ -113,7 +122,7 @@ function VerifyOTPContent() {
         setSuccessMessage(null);
 
         try {
-            const result = await generateOTP(email, "signup");
+            const result = await generateOTP(email, action);
             if (result.success) {
                 setSuccessMessage("OTP has been resent to your email.");
                 setOtp(Array(6).fill(""));
@@ -176,7 +185,7 @@ function VerifyOTPContent() {
                             transition={{ delay: 0.6, duration: 0.6 }}
                         />
                         <p className="text-gray-700 mb-2 text-lg">
-                            Enter the 6-digit code sent to
+                            {action === "login" ? "Enter the login OTP sent to" : "Enter the 6-digit code sent to"}
                         </p>
                         <p className="text-blue-700 font-bold text-base mb-8 truncate">
                             {email ?? "your email"}

@@ -10,6 +10,7 @@ import {
     getUserEmail,
     getUserName,
     isAuthenticated,
+    normalizeProjectsResponse,
 } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import {
@@ -52,7 +53,7 @@ function AddDeviceContent() {
             if (!isAuthenticated()) return;
             try {
                 const data = await getAllProjects();
-                const list: Project[] = data?.data?.projects || data?.projects || [];
+                const list = normalizeProjectsResponse(data).projects as Project[];
                 setProjects(list);
                 if (!selectedProjectId && list.length > 0) {
                     setSelectedProjectId(list[0].id || list[0]._id || "");
