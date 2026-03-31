@@ -47,6 +47,22 @@ function deriveTrend(
     return "stable";
 }
 
+function getPayloadTimestamp(data: Record<string, unknown> | null | undefined): number | null {
+    if (!data) return null;
+    const raw = data._ts ?? data.ts ?? data.timestamp ?? data.createdAt;
+
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+        return raw;
+    }
+
+    if (typeof raw === "string") {
+        const parsed = Date.parse(raw);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    return null;
+}
+
 /**
  * @param serialNumber — device serial number to subscribe to
  * @param intervalMs   — polling interval in ms (default 3000)
@@ -91,6 +107,10 @@ export function useMqttDevice(
             );
 
             const hasData = raw.some((v) => v !== null);
+            const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
+            const sampleTs = payloadTs ?? Date.now();
+            const age = Date.now() - sampleTs;
+            const isFresh = age < onlineThresholdMs;
 
             if (hasData) {
                 // Build channel objects
@@ -114,30 +134,32 @@ export function useMqttDevice(
                 });
                 setRawData(rawMap);
 
-                // Append to history
-                const now = Date.now();
-                const timeLabel = new Date(now).toLocaleTimeString("en-IN", {
+                const timeLabel = new Date(sampleTs).toLocaleTimeString("en-IN", {
                     hour: "2-digit",
                     minute: "2-digit",
                     second: "2-digit",
                 });
-                const row: MqttHistoryRow = { time: timeLabel, ts: now };
-                raw.forEach((v, i) => {
-                    if (v !== null) row[`CH${i + 1}`] = v;
-                });
-                setHistory((prev) => {
-                    const next = [...prev, row];
-                    return next.length > maxHistory ? next.slice(next.length - maxHistory) : next;
-                });
 
-                lastDataTs.current = now;
-                setLastSync(timeLabel);
-                setIsOnline(true);
+                if (isFresh && sampleTs > lastDataTs.current) {
+                    // Append only fresh, newer samples to history.
+                    const row: MqttHistoryRow = { time: timeLabel, ts: sampleTs };
+                    raw.forEach((v, i) => {
+                        if (v !== null) row[`CH${i + 1}`] = v;
+                    });
+                    setHistory((prev) => {
+                        const next = [...prev, row];
+                        return next.length > maxHistory ? next.slice(next.length - maxHistory) : next;
+                    });
+                    setLastSync(timeLabel);
+                }
+
+                lastDataTs.current = Math.max(lastDataTs.current, sampleTs);
+                setIsOnline(isFresh);
                 setMqttError(false);
             } else {
                 // No data returned — check recency
-                const age = Date.now() - lastDataTs.current;
-                setIsOnline(lastDataTs.current > 0 && age < onlineThresholdMs);
+                const lastAge = Date.now() - lastDataTs.current;
+                setIsOnline(lastDataTs.current > 0 && lastAge < onlineThresholdMs);
             }
         } catch {
             setMqttError(true);
@@ -177,7 +199,8 @@ export function useMqttDevice(
  */
 export function useMqttStatus(
     serialNumber: string | null | undefined,
-    intervalMs = POLLING_CONFIG.MQTT_STATUS_POLL
+    intervalMs = POLLING_CONFIG.MQTT_STATUS_POLL,
+    onlineThresholdMs = POLLING_CONFIG.MQTT_ONLINE_THRESHOLD
 ): { isOnline: boolean; checked: boolean } {
     const [isOnline, setIsOnline] = useState(false);
     const [checked, setChecked] = useState(false);
@@ -195,8 +218,12 @@ export function useMqttStatus(
                     DEVICE_CHANNELS.getChannelNames()
                         .map((ch) => data[ch])
                         .some((v) => v !== null && v !== undefined);
+                const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
+                const isFresh = payloadTs !== null
+                    ? (Date.now() - payloadTs) < onlineThresholdMs
+                    : hasData;
                 if (mounted) {
-                    setIsOnline(hasData);
+                    setIsOnline(Boolean(hasData && isFresh));
                     setChecked(true);
                 }
             } catch {
@@ -213,7 +240,7 @@ export function useMqttStatus(
             mounted = false;
             clearInterval(id);
         };
-    }, [serialNumber, intervalMs]);
+    }, [serialNumber, intervalMs, onlineThresholdMs]);
 
     return { isOnline, checked };
 }

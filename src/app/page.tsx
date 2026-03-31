@@ -37,11 +37,17 @@ async function checkDeviceOnline(serialId: string): Promise<boolean> {
     const res = await fetch(`/api/mqtt-readings?serialId=${serialId}`);
     if (!res.ok) return false;
     const data = await res.json();
+    const rawTs = data?._ts ?? data?.timestamp ?? data?.createdAt;
+    const ts = typeof rawTs === "number" ? rawTs : Date.parse(String(rawTs || ""));
+    const isFresh = Number.isFinite(ts)
+      ? (Date.now() - ts) < POLLING_CONFIG.MQTT_ONLINE_THRESHOLD
+      : true;
     return (
       !data.error &&
       [data.RawCH1, data.RawCH2, data.RawCH3, data.RawCH4, data.RawCH5, data.RawCH6].some(
         (v) => v !== null && v !== undefined
-      )
+      ) &&
+      isFresh
     );
   } catch {
     return false;
