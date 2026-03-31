@@ -108,9 +108,9 @@ export function useMqttDevice(
 
             const hasData = raw.some((v) => v !== null);
             const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
-            const sampleTs = payloadTs ?? Date.now();
-            const age = Date.now() - sampleTs;
-            const isFresh = age < onlineThresholdMs;
+            const sampleTs = payloadTs ?? lastDataTs.current;
+            const age = sampleTs > 0 ? Date.now() - sampleTs : Number.POSITIVE_INFINITY;
+            const isFresh = sampleTs > 0 && age < onlineThresholdMs;
 
             if (hasData) {
                 // Build channel objects
@@ -134,7 +134,7 @@ export function useMqttDevice(
                 });
                 setRawData(rawMap);
 
-                const timeLabel = new Date(sampleTs).toLocaleTimeString("en-IN", {
+                const timeLabel = new Date(sampleTs || Date.now()).toLocaleTimeString("en-IN", {
                     hour: "2-digit",
                     minute: "2-digit",
                     second: "2-digit",
@@ -221,7 +221,7 @@ export function useMqttStatus(
                 const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
                 const isFresh = payloadTs !== null
                     ? (Date.now() - payloadTs) < onlineThresholdMs
-                    : hasData;
+                    : false;
                 if (mounted) {
                     setIsOnline(Boolean(hasData && isFresh));
                     setChecked(true);

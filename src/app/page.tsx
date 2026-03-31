@@ -41,7 +41,7 @@ async function checkDeviceOnline(serialId: string): Promise<boolean> {
     const ts = typeof rawTs === "number" ? rawTs : Date.parse(String(rawTs || ""));
     const isFresh = Number.isFinite(ts)
       ? (Date.now() - ts) < POLLING_CONFIG.MQTT_ONLINE_THRESHOLD
-      : true;
+      : false;
     return (
       !data.error &&
       [data.RawCH1, data.RawCH2, data.RawCH3, data.RawCH4, data.RawCH5, data.RawCH6].some(
