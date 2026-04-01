@@ -11,17 +11,26 @@ import {
 // ── Persistent singleton MQTT client ──────────────────────────────
 const globalForMqtt = global;
 let client = globalForMqtt.mqttReadingsClient || null;
-// mqttData[serialId] = { RawCH1..6, _ts, _rxTs, _hasPayloadTs }
+// mqttData[serialId] = { RawCH1..6, _ts, _rxTs, _hasPayloadTs, _isRetained }
 let mqttData = globalForMqtt.mqttReadingsData || {};
 let subscribedTopics = globalForMqtt.mqttReadingsTopics || new Set();
+// subscribedAt[topic] = ms timestamp when we last subscribed to that topic
+// Used to detect initial broker "retained replay" vs live device messages.
+let subscribedAt = globalForMqtt.mqttReadingsSubscribedAt || {};
 
 if (process.env.NODE_ENV !== "production") {
     globalForMqtt.mqttReadingsData = mqttData;
     globalForMqtt.mqttReadingsTopics = subscribedTopics;
+    globalForMqtt.mqttReadingsSubscribedAt = subscribedAt;
 }
 
 // generateMqttTopic now uses constants from mqtt.constants.js
 const generateMqttTopic = buildMqttTopic;
+
+// How long after a subscribe() call do we consider incoming messages to be
+// the broker's "retained replay" (potentially stale) rather than live data.
+// Typical retained replay arrives within ~50ms. 800ms is a safe margin.
+const RETAINED_REPLAY_WINDOW_MS = 800;
 
 /**
  * Parse a timestamp from a device MQTT payload.
@@ -92,6 +101,7 @@ function getClient() {
         console.log("[MQTT Readings] Connected to broker");
         // Re-subscribe to any topics we had before reconnect
         for (const topic of subscribedTopics) {
+            subscribedAt[topic] = Date.now(); // reset window on reconnect
             client.subscribe(topic, (err) => {
                 if (err) console.error(`[MQTT] Re-subscribe failed for ${topic}:`, err.message);
             });
@@ -102,30 +112,35 @@ function getClient() {
         try {
             const parsed = JSON.parse(message.toString());
             const serialId = extractSerialFromTopic(topic);
-            const payloadTs = parsePayloadTimestamp(parsed); // uses UpdateTimeStamp first
+            const payloadTs = parsePayloadTimestamp(parsed);
             const receivedAt = Date.now();
 
-            // packet.retain === true means this is a RETAINED message delivered by the broker
-            // on subscribe — NOT a live message from the device. The device may be offline.
+            // ── Retained replay vs live message detection ──────────────────
+            // We cannot rely solely on packet.retain because some devices publish
+            // ALL messages with retain=1, making even live messages look retained.
             //
-            // If the device embeds UpdateTimeStamp (_ts), we can still judge freshness from it.
-            // But if _ts is null (device has no timestamp), we have no way to know how stale
-            // the retained message is — we MUST NOT use receivedAt as the timestamp, or the
-            // device will always appear Online right after subscribe.
-            //
-            // Fix: for retained messages, _rxTs = payloadTs (device's own ts) or 0 (unknown).
-            // For live messages (retain=false), _rxTs = receivedAt (correct — device just sent it).
-            const isRetained = packet?.retain === true;
+            // Instead: track when we subscribed to each topic. Messages arriving
+            // within RETAINED_REPLAY_WINDOW_MS of subscription = broker's initial
+            // retained replay (potentially stale). Messages after that = live.
+            const subTime = subscribedAt[topic] ?? 0;
+            const msSinceSubscribe = receivedAt - subTime;
+            const isInitialRetainedReplay = msSinceSubscribe < RETAINED_REPLAY_WINDOW_MS;
+
+            // For the initial retained replay: _rxTs = device ts (or 0 if unknown)
+            // For live messages: _rxTs = server receive time
+            const rxTimestamp = isInitialRetainedReplay
+                ? (payloadTs ?? 0)   // 0 = "unknown" → hook will treat as Offline
+                : receivedAt;        // live message → definitely fresh
+
+            // DEBUG: log every received message so we can see exact payload structure
+            console.log(`[MQTT] ${serialId} | retain=${packet?.retain} | msSinceSub=${msSinceSubscribe} | isRetainedReplay=${isInitialRetainedReplay} | payloadTs=${payloadTs} | keys=${Object.keys(parsed).join(",")}`);
+
             const channelData = {
                 _ts: payloadTs,
-                // For retained messages: use device timestamp if available, else 0 (unknown)
-                // For live messages: use server receive time (device just sent this)
-                _rxTs: isRetained ? (payloadTs ?? 0) : receivedAt,
+                _rxTs: rxTimestamp,
                 _hasPayloadTs: payloadTs !== null,
-                _isRetained: isRetained,
-                // ERR: 0 = no error, 1 = sensor not connected / malfunctioning
+                _isRetained: isInitialRetainedReplay,
                 _err: parsed.ERR ?? parsed.err ?? parsed.Error ?? null,
-                // Preserve raw UpdateTimeStamp string for display/debugging
                 _updateTs: parsed.UpdateTimeStamp ?? parsed.updateTimestamp ?? null,
             };
             MQTT_CHANNEL_NAMES.forEach((ch) => {
@@ -136,8 +151,6 @@ function getClient() {
             console.error("[MQTT Readings] Failed to parse message:", error.message);
         }
     });
-
-
 
     client.on("error", (err) => {
         console.error("[MQTT Readings] Connection error:", err.message);
@@ -154,6 +167,7 @@ async function ensureSubscribed(mqttClient, serialId) {
     const topic = generateMqttTopic(serialId);
     if (subscribedTopics.has(topic)) return; // already subscribed — persist across requests
 
+    subscribedAt[topic] = Date.now(); // record subscription time for retained-replay detection
     return new Promise((resolve, reject) => {
         mqttClient.subscribe(topic, (err) => {
             if (err) {
