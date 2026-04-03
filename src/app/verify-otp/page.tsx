@@ -84,6 +84,21 @@ function VerifyOTPContent() {
         setLoading(true);
 
         try {
+            if (isResetFlow) {
+                const sessionToken =
+                    (typeof window !== "undefined"
+                        ? localStorage.getItem("auth_token") || sessionStorage.getItem("auth_token")
+                        : "");
+
+                if (!sessionToken) {
+                    setError("Reset password requires an authenticated session token. Please sign in and use Settings > Security.");
+                    return;
+                }
+
+                window.location.href = `/reset-password?email=${encodeURIComponent(email)}&verificationCode=${encodeURIComponent(fullOtp)}`;
+                return;
+            }
+
             const result = await verifyOTP(email, fullOtp);
             const isSuccess =
                 result.success ||
@@ -93,22 +108,6 @@ function VerifyOTPContent() {
             if (isSuccess) {
                 const token = result.data?.token || result.token;
                 if (token) saveToken(token);
-
-                if (isResetFlow) {
-                    const sessionToken =
-                        token ||
-                        (typeof window !== "undefined"
-                            ? localStorage.getItem("auth_token") || sessionStorage.getItem("auth_token")
-                            : "");
-
-                    if (!sessionToken) {
-                        setError("Reset password requires an authenticated session token. Please sign in and use Settings > Security.");
-                        return;
-                    }
-
-                    window.location.href = `/reset-password?email=${encodeURIComponent(email)}&verificationCode=${encodeURIComponent(fullOtp)}`;
-                    return;
-                }
 
                 let target = "/?setup=org";
                 try {
