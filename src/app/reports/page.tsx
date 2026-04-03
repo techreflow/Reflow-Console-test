@@ -180,24 +180,41 @@ export default function ReportsPage() {
         setExporting(true);
         try {
             // Send full timestamp bounds for precision
-            let startTimestampStr = "";
-            let endTimestampStr = "";
+            const startTimestamp = new Date(startDate).toISOString();
+            const endTimestamp = new Date(endDate + "T23:59:59").toISOString();
 
-            if (useTimeFilter) {
-                // If using time filter, construct date-time string
-                startTimestampStr = new Date(`${startDate}T${startTime}:00`).toISOString();
-                endTimestampStr = new Date(`${endDate}T${endTime}:59`).toISOString();
-            } else {
-                // Otherwise use start of day and end of day
-                startTimestampStr = new Date(`${startDate}T00:00:00`).toISOString();
-                endTimestampStr = new Date(`${endDate}T23:59:59`).toISOString();
-            }
-
-            const resData = await exportDeviceData(selectedDevice, startTimestampStr, endTimestampStr, exportInterval);
+            const resData = await exportDeviceData(selectedDevice, startTimestamp, endTimestamp, exportInterval);
             
             // Handle array or nested data structures
             let dataRowArray = Array.isArray(resData) ? resData 
                                  : (resData?.data || resData?.readings || resData?.deviceData || []);
+
+            // Client-side time based filtering
+            if (useTimeFilter && dataRowArray.length > 0) {
+                const filtered = [];
+                const [startHr, startMin] = startTime.split(':').map(Number);
+                const [endHr, endMin] = endTime.split(':').map(Number);
+                const startMinsOfDay = (startHr || 0) * 60 + (startMin || 0);
+                const endMinsOfDay = (endHr || 0) * 60 + (endMin || 0);
+
+                for (const row of dataRowArray) {
+                    const timeField = row.timestamp || row.createdAt || row.created_at || row.time;
+                    if (!timeField) {
+                        filtered.push(row);
+                        continue;
+                    }
+                    const rd = new Date(timeField);
+                    if (isNaN(rd.getTime())) {
+                        filtered.push(row);
+                        continue;
+                    }
+                    const rowMins = rd.getHours() * 60 + rd.getMinutes();
+                    if (rowMins >= startMinsOfDay && rowMins <= endMinsOfDay) {
+                        filtered.push(row);
+                    }
+                }
+                dataRowArray = filtered;
+            }
 
             // Client-side filtering as fallback
             let intervalMins = 1;
