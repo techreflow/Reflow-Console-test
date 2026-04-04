@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import { generateOTP } from "@/lib/api";
+import { generateOTP, getToken } from "@/lib/api";
 
 export default function ForgotPasswordPage() {
     const [email, setEmail] = useState("");
@@ -17,6 +17,12 @@ export default function ForgotPasswordPage() {
 
         if (!email) {
             setError("Email address is required.");
+            return;
+        }
+
+        const token = getToken();
+        if (!token) {
+            setError("Current backend password-update endpoint requires an active login session. Please sign in and use Settings > Security.");
             return;
         }
 

@@ -235,20 +235,6 @@ export default function LoginPage() {
                                 </motion.div>
                             )}
 
-                            <motion.div
-                                className="text-right"
-                                initial={{ y: 20, opacity: 0 }}
-                                animate={{ y: 0, opacity: 1 }}
-                                transition={{ delay: 0.6 }}
-                            >
-                                <Link
-                                    href="/forgot-password"
-                                    className="text-sm text-blue-600 hover:text-blue-700 font-semibold hover:underline transition-all"
-                                >
-                                    Forgot Password?
-                                </Link>
-                            </motion.div>
-
                             <button
                                 type="submit"
                                 disabled={loading}

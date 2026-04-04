@@ -4,7 +4,7 @@ import React, { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { useSearchParams } from "next/navigation";
-import { clearAuth, updateUserPassword } from "@/lib/api";
+import { clearAuth, getToken, updateUserPassword } from "@/lib/api";
 
 export default function ResetPasswordPage() {
     return (
@@ -43,6 +43,12 @@ function ResetPasswordContent() {
         e.preventDefault();
         setError(null);
         setSuccess(null);
+
+        const token = getToken();
+        if (!token) {
+            setError("This password update API requires an active login session. Please sign in and change password from Settings > Security.");
+            return;
+        }
 
         if (!verificationCode.trim()) {
             setError("Missing verification code. Please restart the reset flow.");
