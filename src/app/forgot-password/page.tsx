@@ -29,7 +29,7 @@ export default function ForgotPasswordPage() {
         setLoading(true);
 
         try {
-            const result = await generateOTP(email, "reset");
+            const result = await generateOTP(email, "login");
 
             const isSuccess =
                 result.success ||
