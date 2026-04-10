@@ -196,7 +196,7 @@ export default function DeviceConfigPage() {
     }, [deviceId]);
 
     // ── MQTT real-time via shared hook ────────
-    const { channels, isOnline, lastSync, mqttError, history, sensorErr, updateTs, rawData, calibratedData } = useMqttDevice(
+    const { channels, isOnline, checked, lastSync, mqttError, history, sensorErr, updateTs, rawData, calibratedData } = useMqttDevice(
         device?.serialNumber,
         3000,   // poll every 3s
         60,     // keep 60 history points for sparks
@@ -393,8 +393,12 @@ export default function DeviceConfigPage() {
     };
 
     // ── Derived status ────────────────────────
-    const statusColor = isOnline ? "bg-success/10 text-success" : "bg-red-100 text-red-600";
-    const dotColor    = isOnline ? "bg-success" : "bg-red-500";
+    const statusColor = !checked
+        ? "bg-slate-100 text-slate-600"
+        : isOnline
+            ? "bg-success/10 text-success"
+            : "bg-red-100 text-red-600";
+    const dotColor = !checked ? "bg-slate-400" : isOnline ? "bg-success" : "bg-red-500";
 
     // Message rate: use intervals (samples - 1) over elapsed time, capped at 12 msg/min.
     const msgRate = useMemo(() => {
@@ -439,8 +443,8 @@ export default function DeviceConfigPage() {
                                         {device?.name || deviceId}
                                     </h2>
                                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${statusColor}`}>
-                                        <span className={`w-1.5 h-1.5 rounded-full ${dotColor} ${isOnline ? "animate-pulse" : ""}`} />
-                                        {isOnline ? "Online" : "Offline"}
+                                        <span className={`w-1.5 h-1.5 rounded-full ${dotColor} ${checked && isOnline ? "animate-pulse" : ""}`} />
+                                        {!checked ? "Checking..." : isOnline ? "Online" : "Offline"}
                                     </span>
                                     {sensorErr && (
                                         <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200">
@@ -859,7 +863,11 @@ export default function DeviceConfigPage() {
                                 </div>
                             </div>
                             <p className="text-[11px] text-text-muted">
-                                {isOnline ? "Device actively sending data via MQTT" : "No data received — device may be offline"}
+                                {!checked
+                                    ? "Checking MQTT telemetry..."
+                                    : isOnline
+                                        ? "Device actively sending data via MQTT"
+                                        : "No data received for 1 minute — device may be offline"}
                             </p>
                         </div>
                     </motion.div>
@@ -877,9 +885,9 @@ export default function DeviceConfigPage() {
                             <h4 className="text-sm font-bold text-text-primary">Network</h4>
                         </div>
                         <div className="flex items-center gap-2 mb-2">
-                            <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-success animate-pulse" : "bg-red-500"}`} />
+                            <span className={`w-2.5 h-2.5 rounded-full ${!checked ? "bg-slate-400 animate-pulse" : isOnline ? "bg-success animate-pulse" : "bg-red-500"}`} />
                             <span className="text-sm font-semibold text-text-primary">
-                                {isOnline ? "Connected" : "Disconnected"}
+                                {!checked ? "Checking..." : isOnline ? "Connected" : "Disconnected"}
                             </span>
                         </div>
                         <div className="space-y-1 text-xs text-text-muted">

@@ -51,6 +51,8 @@ export const POLLING_CONFIG = {
   // 5-min threshold — device UpdateTimeStamp within 5 mins of now → Online.
   // Matches original working config; handles devices that publish every 2-3 minutes.
   MQTT_ONLINE_THRESHOLD: 300_000,
+  // Keep device online for 1 minute during transient network latency/dropouts.
+  MQTT_OFFLINE_GRACE_MS: 60_000,
   MQTT_STATUS_POLL: 15_000,         // 15 seconds - status badge check interval
   ANALYTICS_AUTO_FETCH: 7000,       // Auto-fetch analytics after delay
   DASHBOARD_MQTT_REFRESH: 30_000,   // 30 seconds - refresh MQTT stats on dashboard
