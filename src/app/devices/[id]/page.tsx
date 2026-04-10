@@ -101,6 +101,33 @@ function parseFactorOperation(raw: unknown): FactorOperation {
     return 0;
 }
 
+function sanitizeCalibrationValue(value: number, fac: FactorOperation): number {
+    if (fac === 3) {
+        return value > 0 ? value : 0.01;
+    }
+    return value;
+}
+
+function computeLocalCalibratedValue(rawValue: unknown, fac: FactorOperation, cal: number): number | null {
+    const raw = Number(rawValue);
+    const factor = Number(cal);
+    if (!Number.isFinite(raw) || !Number.isFinite(factor)) return null;
+
+    switch (fac) {
+        case 0:
+            return raw + factor;
+        case 1:
+            return raw - factor;
+        case 2:
+            return raw * factor;
+        case 3:
+            if (factor <= 0) return null;
+            return raw / factor;
+        default:
+            return raw + factor;
+    }
+}
+
 function firstString(...values: unknown[]): string {
     for (const value of values) {
         if (typeof value === "string" && value.trim()) return value.trim();
@@ -233,10 +260,15 @@ export default function DeviceConfigPage() {
     }, [deviceId]);
 
     // ── MQTT real-time via shared hook ────────
-    const { channels, isOnline, checked, lastSync, mqttError, history, sensorErr, updateTs, rawData, calibratedData } = useMqttDevice(
+    const { channels, isOnline, checked, lastSync, mqttError, history, sensorErr, updateTs, rawData } = useMqttDevice(
         device?.serialNumber,
         3000,   // poll every 3s
         60,     // keep 60 history points for sparks
+    );
+
+    const hasInvalidDivisionCalibration = useMemo(
+        () => Object.values(calibration).some((ch) => ch.fac === 3 && Number(ch.cal) <= 0),
+        [calibration]
     );
 
     // ── Load calibration config from backend ──
@@ -289,7 +321,10 @@ export default function DeviceConfigPage() {
                         min,
                         max,
                         fac: parseFactorOperation(cfg[`FAC${i}`]),
-                        cal: toFiniteNumber(cfg[`CAL${i}`], 0),
+                        cal: sanitizeCalibrationValue(
+                            toFiniteNumber(cfg[`CAL${i}`], 0),
+                            parseFactorOperation(cfg[`FAC${i}`])
+                        ),
                         thresholdMin: thresholdMin === null ? min : clampWithin(thresholdMin, min, max),
                         thresholdMax: thresholdMax === null ? max : clampWithin(thresholdMax, min, max),
                     };
@@ -308,6 +343,10 @@ export default function DeviceConfigPage() {
     // ── Save calibration to backend ───────────
     const handleSaveCalibration = async () => {
         if (!device?.serialNumber) return;
+        if (hasInvalidDivisionCalibration) {
+            alert("Division operation requires CAL greater than 0.");
+            return;
+        }
         setSavingConfig(true);
         setConfigSaved(false);
         setConfigDiscarded([]);
@@ -331,7 +370,10 @@ export default function DeviceConfigPage() {
                 config[`ALERTMIN${i}`] = alertMin;
                 config[`ALERTMAX${i}`] = alertMax;
                 config[`FAC${i}`] = parseFactorOperation(ch.fac);
-                config[`CAL${i}`] = toFiniteNumber(ch.cal, 0);
+                config[`CAL${i}`] = sanitizeCalibrationValue(
+                    toFiniteNumber(ch.cal, 0),
+                    parseFactorOperation(ch.fac)
+                );
             });
             const res = await fetch(`/api/device-config?serialId=${device.serialNumber}`, {
                 method: "POST",
@@ -659,12 +701,13 @@ export default function DeviceConfigPage() {
                                                         {Object.entries(calibration).map(([key, ch]) => {
                                                             const channelIndex = Number.parseInt(key.replace("CH", ""), 10);
                                                             const rawVal = rawData[`RawCH${channelIndex}`];
-                                                            const calVal = calibratedData[`CH${channelIndex}`];
+                                                            const calVal = computeLocalCalibratedValue(rawVal, ch.fac, ch.cal);
                                                             const thresholdInvalid = (
                                                                 (ch.thresholdMin !== null && (ch.thresholdMin < ch.min || ch.thresholdMin > ch.max)) ||
                                                                 (ch.thresholdMax !== null && (ch.thresholdMax < ch.min || ch.thresholdMax > ch.max)) ||
                                                                 (ch.thresholdMin !== null && ch.thresholdMax !== null && ch.thresholdMin > ch.thresholdMax)
                                                             );
+                                                            const divisionInvalid = ch.fac === 3 && Number(ch.cal) <= 0;
 
                                                             return (
                                                                 <tr key={key} className="hover:bg-surface-muted/30 transition-colors">
@@ -723,6 +766,10 @@ export default function DeviceConfigPage() {
                                                                                 onChange={(e) => updateChannelCalibration(key, (current) => ({
                                                                                     ...current,
                                                                                     fac: parseFactorOperation(Number(e.target.value)),
+                                                                                    cal: sanitizeCalibrationValue(
+                                                                                        toFiniteNumber(current.cal, 0),
+                                                                                        parseFactorOperation(Number(e.target.value))
+                                                                                    ),
                                                                                 }))}
                                                                                 className="w-36 px-2 py-1.5 rounded border border-border-subtle text-sm font-medium text-center bg-white focus:border-primary outline-none"
                                                                             >
@@ -739,14 +786,25 @@ export default function DeviceConfigPage() {
                                                                             <input
                                                                                 type="number"
                                                                                 step="0.01"
+                                                                                min={ch.fac === 3 ? 0.01 : undefined}
                                                                                 value={ch.cal}
                                                                                 onChange={(e) => updateChannelCalibration(key, (current) => ({
                                                                                     ...current,
-                                                                                    cal: toFiniteNumber(e.target.value, current.cal),
+                                                                                    cal: sanitizeCalibrationValue(
+                                                                                        toFiniteNumber(e.target.value, current.cal),
+                                                                                        current.fac
+                                                                                    ),
                                                                                 }))}
-                                                                                className="w-24 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-bold text-primary focus:border-primary outline-none"
+                                                                                className={`w-24 px-2 py-1.5 rounded border text-center text-sm font-bold text-primary focus:border-primary outline-none ${
+                                                                                    divisionInvalid ? "border-red-300" : "border-border-subtle"
+                                                                                }`}
                                                                             />
                                                                         </div>
+                                                                        {divisionInvalid && (
+                                                                            <p className="mt-1 text-[10px] text-red-600 text-center font-semibold">
+                                                                                CAL must be &gt; 0 for Division
+                                                                            </p>
+                                                                        )}
                                                                     </td>
                                                                     <td className="px-4 py-3 text-right">
                                                                         <span className="font-mono font-black text-primary bg-primary/5 px-2 py-1 rounded text-sm">
@@ -780,9 +838,14 @@ export default function DeviceConfigPage() {
                                     {!configLoading && !configError && (
                                         <div className="flex items-start gap-2 p-3 mt-3 rounded-lg bg-primary/5 border border-primary/10">
                                             <Info className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
-                                            <p className="text-xs text-text-muted">
-                                                Publish sends SNO, range, alert thresholds (`ALERTMINx/ALERTMAXx`), factor-operation and calibration fields.
-                                            </p>
+                                            <div className="text-xs text-text-muted space-y-1">
+                                                <p>
+                                                    Calibrated Value is calculated in this panel from Raw MQTT value + selected Factor/CAL, so you can preview before publish.
+                                                </p>
+                                                <p>
+                                                    Publish sends SNO, range, alert thresholds (`ALERTMINx/ALERTMAXx`), factor-operation and calibration fields.
+                                                </p>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -797,7 +860,7 @@ export default function DeviceConfigPage() {
                                 </button>
                                 <button
                                     onClick={handleSaveCalibration}
-                                    disabled={savingConfig || configLoading || Object.keys(calibration).length === 0}
+                                    disabled={savingConfig || configLoading || Object.keys(calibration).length === 0 || hasInvalidDivisionCalibration}
                                     className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {savingConfig ? (

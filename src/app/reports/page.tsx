@@ -8,6 +8,7 @@ import {
     getUserName,
     isAuthenticated,
     exportDeviceData,
+    getToken,
 } from "@/lib/api";
 import { useProjects } from "@/lib/ProjectsContext";
 import { useMqttStatus } from "@/lib/useMqttDevice";
@@ -65,6 +66,15 @@ function uniqueNonEmpty(values: Array<string | undefined | null>): string[] {
     return Array.from(new Set(values.map((v) => (v || "").trim()).filter(Boolean)));
 }
 
+function extractChannelIndex(key: string): number | null {
+    const normalized = String(key || "").trim();
+    const snoMatch = normalized.match(/^sno(\d+)$/i);
+    if (snoMatch?.[1]) return Number(snoMatch[1]);
+    const chMatch = normalized.match(/(?:raw)?ch(\d+)$/i);
+    if (chMatch?.[1]) return Number(chMatch[1]);
+    return null;
+}
+
 export default function ReportsPage() {
     const email = getUserEmail();
     const fullName = getUserName();
@@ -84,6 +94,7 @@ export default function ReportsPage() {
     const [exportInterval, setExportInterval] = useState<"1 min" | "5 mins" | "15 mins">("1 min");
     const [exporting, setExporting] = useState(false);
     const [exportData, setExportData] = useState<any[]>([]);
+    const [channelNameMap, setChannelNameMap] = useState<Record<number, string>>({});
 
     // Dropdown state for Export
     const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
@@ -190,6 +201,42 @@ export default function ReportsPage() {
         };
     }, [allDevices, scheduleDevice]);
 
+    useEffect(() => {
+        if (!selectedDeviceMeta.serial) {
+            setChannelNameMap({});
+            return;
+        }
+        const token = getToken();
+        async function loadChannelNames() {
+            try {
+                const res = await fetch(`/api/device-config?serialId=${selectedDeviceMeta.serial}`, {
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                });
+                if (!res.ok) return;
+                const json = await res.json();
+                const cfg = json?.data?.config;
+                if (!cfg || typeof cfg !== "object") return;
+                const next: Record<number, string> = {};
+                let i = 1;
+                while (cfg[`SNO${i}`] !== undefined) {
+                    const label = String(cfg[`SNO${i}`] ?? "").trim();
+                    if (label) next[i] = label;
+                    i++;
+                }
+                setChannelNameMap(next);
+            } catch {
+                // keep silent; fallback to raw column names
+            }
+        }
+        loadChannelNames();
+    }, [selectedDeviceMeta.serial]);
+
+    const getHeaderLabel = useCallback((rawKey: string) => {
+        const index = extractChannelIndex(rawKey);
+        if (index && channelNameMap[index]) return channelNameMap[index];
+        return rawKey;
+    }, [channelNameMap]);
+
     // Load schedules for selected device
     useEffect(() => {
         if (!scheduleDeviceMeta.id && !scheduleDeviceMeta.serial) return;
@@ -268,8 +315,9 @@ export default function ReportsPage() {
             return;
         }
         const headers = Object.keys(data[0]);
+        const displayHeaders = headers.map(getHeaderLabel);
         const csvContent = [
-            headers.join(","),
+            displayHeaders.join(","),
             ...data.map((row) => headers.map((h) => row[h] ?? "").join(",")),
         ].join("\n");
 
@@ -302,7 +350,7 @@ export default function ReportsPage() {
 
             // Header row
             headers.forEach((h, i) => {
-                doc.text(h, 14 + i * 30, y);
+                doc.text(getHeaderLabel(h), 14 + i * 30, y);
             });
             y += 6;
 
