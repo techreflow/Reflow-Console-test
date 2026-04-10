@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { DEVICE_CHANNELS, POLLING_CONFIG } from "@/config/constants";
 
 export interface MqttChannel {
+    index: number;
     name: string;
     channel: string;
     unit: string;
@@ -35,8 +36,10 @@ export interface UseMqttDeviceResult {
     updateTs: string | null;
     /** Rolling history of raw readings — up to `maxHistory` points */
     history: MqttHistoryRow[];
-    /** Raw last message object from MQTT */
+    /** Latest raw channel readings from MQTT payload (RawCH1..RawCH6). */
     rawData: Record<string, number | null>;
+    /** Latest calibrated channel readings from MQTT payload (CH1..CH6). */
+    calibratedData: Record<string, number | null>;
     /** Force an immediate re-poll */
     refresh: () => void;
 }
@@ -100,6 +103,7 @@ export function useMqttDevice(
     const [updateTs, setUpdateTs] = useState<string | null>(null);
     const [history, setHistory] = useState<MqttHistoryRow[]>([]);
     const [rawData, setRawData] = useState<Record<string, number | null>>({});
+    const [calibratedData, setCalibratedData] = useState<Record<string, number | null>>({});
 
     const prevRaw = useRef<(number | null)[]>([null, null, null, null, null, null]);
     const lastDataTs = useRef<number>(0);
@@ -118,15 +122,19 @@ export function useMqttDevice(
                 return;
             }
 
-            // Use calibrated CH values for display; fall back to RawCH if CH absent
-            const raw = [1, 2, 3, 4, 5, 6].map((i) => {
-                const cal = data[`CH${i}`];
+            // Build separate raw/calibrated vectors.
+            const rawValues = [1, 2, 3, 4, 5, 6].map((i) => {
                 const rawVal = data[`RawCH${i}`];
-                const v = cal ?? rawVal;
-                return v !== null && v !== undefined ? Number(v) : null;
+                return rawVal !== null && rawVal !== undefined ? Number(rawVal) : null;
             }) as (number | null)[];
+            const calibratedValues = [1, 2, 3, 4, 5, 6].map((i) => {
+                const cal = data[`CH${i}`];
+                return cal !== null && cal !== undefined ? Number(cal) : null;
+            }) as (number | null)[];
+            // Use calibrated CH values for display; fall back to RawCH if CH absent.
+            const displayValues = calibratedValues.map((cal, idx) => cal ?? rawValues[idx]) as (number | null)[];
 
-            const hasData = raw.some((v) => v !== null);
+            const hasData = displayValues.some((v) => v !== null);
             const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
             const isRetained = (data as any)?._isRetained === true;
 
@@ -148,8 +156,9 @@ export function useMqttDevice(
 
             if (hasData) {
                 // Build channel objects
-                const built: MqttChannel[] = raw
+                const built: MqttChannel[] = displayValues
                     .map((v, i) => ({
+                        index: i + 1,
                         name: `Channel ${i + 1}`,
                         channel: `CH-0${i + 1}`,
                         unit: "—",
@@ -158,7 +167,7 @@ export function useMqttDevice(
                     }))
                     .filter((c) => c.value !== null);
 
-                prevRaw.current = raw;
+                prevRaw.current = displayValues;
                 setChannels(built);
 
                 // ERR field: 0 = ok, 1 = sensor not connected / malfunctioning
@@ -171,10 +180,15 @@ export function useMqttDevice(
 
                 // Build raw data map
                 const rawMap: Record<string, number | null> = {};
-                raw.forEach((v, i) => {
-                    rawMap[DEVICE_CHANNELS.NAMES[i]] = v;
+                rawValues.forEach((v, i) => {
+                    rawMap[DEVICE_CHANNELS.NAMES[i] ?? `RawCH${i + 1}`] = v;
                 });
                 setRawData(rawMap);
+                const calibratedMap: Record<string, number | null> = {};
+                calibratedValues.forEach((v, i) => {
+                    calibratedMap[`CH${i + 1}`] = v;
+                });
+                setCalibratedData(calibratedMap);
 
                 const timeLabel = new Date(sampleTs || Date.now()).toLocaleTimeString("en-IN", {
                     hour: "2-digit",
@@ -186,7 +200,7 @@ export function useMqttDevice(
                 if (isFresh && sampleTs > lastDataTs.current) {
                     // Append only fresh, newer samples to history.
                     const row: MqttHistoryRow = { time: timeLabel, ts: sampleTs };
-                    raw.forEach((v, i) => {
+                    displayValues.forEach((v, i) => {
                         if (v !== null) row[`CH${i + 1}`] = v;
                     });
                     setHistory((prev) => {
@@ -234,6 +248,7 @@ export function useMqttDevice(
         updateTs,
         history,
         rawData,
+        calibratedData,
         refresh: fetchData,
     };
 }

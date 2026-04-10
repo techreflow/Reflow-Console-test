@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import DashboardLayout from "@/components/DashboardLayout";
@@ -32,6 +32,18 @@ interface CommandLog {
     payload: Record<string, string | number>;
 }
 
+type FactorOperation = 0 | 1 | 2 | 3;
+
+interface ChannelCalibration {
+    name: string;
+    min: number;
+    max: number;
+    fac: FactorOperation;
+    cal: number;
+    thresholdMin: number | null;
+    thresholdMax: number | null;
+}
+
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
@@ -46,6 +58,46 @@ function formatLastSeen(iso: string | undefined): string {
 }
 
 const SPARK_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"];
+const FACTOR_OPTIONS: Array<{ value: FactorOperation; label: string }> = [
+    { value: 0, label: "Addition" },
+    { value: 1, label: "Subtraction" },
+    { value: 2, label: "Multiplication" },
+    { value: 3, label: "Division" },
+];
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+}
+
+function toNullableNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === "") return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+}
+
+function normalizeRange(min: number, max: number): { min: number; max: number } {
+    return min <= max ? { min, max } : { min: max, max: min };
+}
+
+function clampWithin(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
+}
+
+function parseFactorOperation(raw: unknown): FactorOperation {
+    if (typeof raw === "string") {
+        const normalized = raw.trim().toLowerCase();
+        if (normalized.includes("add")) return 0;
+        if (normalized.includes("sub")) return 1;
+        if (normalized.includes("mul")) return 2;
+        if (normalized.includes("div")) return 3;
+    }
+    const asNum = Number(raw);
+    if (Number.isInteger(asNum) && asNum >= 0 && asNum <= 3) {
+        return asNum as FactorOperation;
+    }
+    return 0;
+}
 
 // ─────────────────────────────────────────────
 // Spark chart component
@@ -106,7 +158,7 @@ export default function DeviceConfigPage() {
 
     // Calibration config — populated from GET /device/:id/mqtt/config
     // Starts empty; Save is disabled until config is successfully loaded
-    const [calibration, setCalibration] = useState<Record<string, { name: string; min: number; max: number; fac: number; cal: number }>>({});
+    const [calibration, setCalibration] = useState<Record<string, ChannelCalibration>>({});
     const [configLoading, setConfigLoading] = useState(false);
     const [configError, setConfigError]   = useState<string | null>(null);
     const [configDiscarded, setConfigDiscarded] = useState<{ key: string; reason: string }[]>([]);
@@ -144,7 +196,7 @@ export default function DeviceConfigPage() {
     }, [deviceId]);
 
     // ── MQTT real-time via shared hook ────────
-    const { channels, isOnline, lastSync, mqttError, history, sensorErr, updateTs } = useMqttDevice(
+    const { channels, isOnline, lastSync, mqttError, history, sensorErr, updateTs, rawData, calibratedData } = useMqttDevice(
         device?.serialNumber,
         3000,   // poll every 3s
         60,     // keep 60 history points for sparks
@@ -176,14 +228,25 @@ export default function DeviceConfigPage() {
                 let channelCount = 0;
                 while (cfg[`SNO${channelCount + 1}`] !== undefined) channelCount++;
                 if (channelCount === 0) { setConfigError("Device has no channels in config."); return; }
-                const updated: Record<string, { name: string; min: number; max: number; fac: number; cal: number }> = {};
+                const updated: Record<string, ChannelCalibration> = {};
                 for (let i = 1; i <= channelCount; i++) {
+                    const rawMin = toFiniteNumber(cfg[`MIN${i}`], 0);
+                    const rawMax = toFiniteNumber(cfg[`MAX${i}`], 100);
+                    const { min, max } = normalizeRange(rawMin, rawMax);
+                    const thresholdMin = toNullableNumber(
+                        cfg[`THMIN${i}`] ?? cfg[`THRESH_MIN${i}`] ?? cfg[`THRMIN${i}`] ?? cfg[`TMIN${i}`]
+                    );
+                    const thresholdMax = toNullableNumber(
+                        cfg[`THMAX${i}`] ?? cfg[`THRESH_MAX${i}`] ?? cfg[`THRMAX${i}`] ?? cfg[`TMAX${i}`]
+                    );
                     updated[`CH${i}`] = {
                         name: String(cfg[`SNO${i}`] ?? `Channel ${i}`).trim(),
-                        min:  Number(cfg[`MIN${i}`] ?? 0),
-                        max:  Number(cfg[`MAX${i}`] ?? 100),
-                        fac:  Number(cfg[`FAC${i}`] ?? 0),
-                        cal:  Number(cfg[`CAL${i}`] ?? 0),
+                        min,
+                        max,
+                        fac: parseFactorOperation(cfg[`FAC${i}`]),
+                        cal: toFiniteNumber(cfg[`CAL${i}`], 0),
+                        thresholdMin: thresholdMin === null ? min : clampWithin(thresholdMin, min, max),
+                        thresholdMax: thresholdMax === null ? max : clampWithin(thresholdMax, min, max),
                     };
                 }
                 setCalibration(updated);
@@ -208,12 +271,14 @@ export default function DeviceConfigPage() {
             // Build config from whatever channels were loaded from the backend
             const config: Record<string, string | number> = {};
             Object.entries(calibration).forEach(([key, ch], idx) => {
-                const i = idx + 1;
+                const parsedIndex = Number.parseInt(key.replace("CH", ""), 10);
+                const i = Number.isFinite(parsedIndex) ? parsedIndex : idx + 1;
+                const { min, max } = normalizeRange(toFiniteNumber(ch.min, 0), toFiniteNumber(ch.max, 0));
                 config[`SNO${i}`] = ch.name;
-                config[`MIN${i}`] = ch.min;
-                config[`MAX${i}`] = ch.max;
-                config[`FAC${i}`] = ch.fac;
-                config[`CAL${i}`] = ch.cal;
+                config[`MIN${i}`] = min;
+                config[`MAX${i}`] = max;
+                config[`FAC${i}`] = parseFactorOperation(ch.fac);
+                config[`CAL${i}`] = toFiniteNumber(ch.cal, 0);
             });
             const res = await fetch(`/api/device-config?serialId=${device.serialNumber}`, {
                 method: "POST",
@@ -242,6 +307,60 @@ export default function DeviceConfigPage() {
         } finally {
             setSavingConfig(false);
         }
+    };
+
+    const updateChannelCalibration = (key: string, updater: (current: ChannelCalibration) => ChannelCalibration) => {
+        setCalibration((prev) => {
+            const current = prev[key];
+            if (!current) return prev;
+            return { ...prev, [key]: updater(current) };
+        });
+    };
+
+    const handleRangeChange = (key: string, field: "min" | "max", rawValue: string) => {
+        updateChannelCalibration(key, (current) => {
+            const nextValue = toFiniteNumber(rawValue, current[field]);
+            const normalized = field === "min"
+                ? normalizeRange(nextValue, current.max)
+                : normalizeRange(current.min, nextValue);
+
+            let thresholdMin = current.thresholdMin;
+            let thresholdMax = current.thresholdMax;
+
+            if (thresholdMin !== null) thresholdMin = clampWithin(thresholdMin, normalized.min, normalized.max);
+            if (thresholdMax !== null) thresholdMax = clampWithin(thresholdMax, normalized.min, normalized.max);
+            if (thresholdMin !== null && thresholdMax !== null && thresholdMin > thresholdMax) {
+                thresholdMax = thresholdMin;
+            }
+
+            return {
+                ...current,
+                min: normalized.min,
+                max: normalized.max,
+                thresholdMin,
+                thresholdMax,
+            };
+        });
+    };
+
+    const handleThresholdChange = (key: string, field: "thresholdMin" | "thresholdMax", rawValue: string) => {
+        updateChannelCalibration(key, (current) => {
+            const parsed = toNullableNumber(rawValue);
+            if (parsed === null) {
+                return { ...current, [field]: null };
+            }
+
+            const clamped = clampWithin(parsed, current.min, current.max);
+            let thresholdMin = field === "thresholdMin" ? clamped : current.thresholdMin;
+            let thresholdMax = field === "thresholdMax" ? clamped : current.thresholdMax;
+
+            if (thresholdMin !== null && thresholdMax !== null && thresholdMin > thresholdMax) {
+                if (field === "thresholdMin") thresholdMax = thresholdMin;
+                else thresholdMin = thresholdMax;
+            }
+
+            return { ...current, thresholdMin, thresholdMax };
+        });
     };
 
     // ── Delete device ─────────────────────────
@@ -277,13 +396,18 @@ export default function DeviceConfigPage() {
     const statusColor = isOnline ? "bg-success/10 text-success" : "bg-red-100 text-red-600";
     const dotColor    = isOnline ? "bg-success" : "bg-red-500";
 
-    // Message rate (msgs in last 60 history entries over time span)
-    const msgRate = history.length >= 2
-        ? Math.round((history.length / Math.max(
-            1, (history[history.length - 1].ts as number - history[0].ts as number) / 1000
-          )) * 60)
-        : 0;
-    const signalPct = Math.min(100, msgRate * 5); // ≥20 msg/min = 100%
+    // Message rate: use intervals (samples - 1) over elapsed time, capped at 12 msg/min.
+    const msgRate = useMemo(() => {
+        if (history.length < 2) return 0;
+        const firstTs = Number(history[0]?.ts);
+        const lastTs = Number(history[history.length - 1]?.ts);
+        if (!Number.isFinite(firstTs) || !Number.isFinite(lastTs) || lastTs <= firstTs) return 0;
+        const elapsedSec = (lastTs - firstTs) / 1000;
+        if (elapsedSec <= 0) return 0;
+        const perMinute = ((history.length - 1) / elapsedSec) * 60;
+        return Math.min(12, Math.max(0, Math.round(perMinute)));
+    }, [history]);
+    const signalPct = Math.min(100, Math.round((msgRate / 12) * 100));
 
     return (
         <DashboardLayout
@@ -428,60 +552,129 @@ export default function DeviceConfigPage() {
 
                                     {/* Table — only when data is loaded */}
                                     {!configLoading && !configError && Object.keys(calibration).length > 0 && (
-                                        <div className="border border-border-subtle rounded-xl overflow-hidden shadow-sm">
-                                            <table className="w-full text-left text-sm">
-                                                <thead className="bg-surface-muted text-[11px] uppercase tracking-wider text-text-muted">
-                                                    <tr>
-                                                        <th className="px-4 py-3 font-bold border-b border-border-subtle">Channel Name (SNO)</th>
-                                                        <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Range (MIN – MAX)</th>
-                                                        <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Factor (FAC)</th>
-                                                        <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Calibration (CAL)</th>
-                                                        <th className="px-4 py-3 font-bold text-right border-b border-border-subtle">Live Value</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-border-subtle">
-                                                    {Object.entries(calibration).map(([key, ch]) => {
-                                                        const idx = parseInt(key.replace("CH", "")) - 1;
-                                                        const chData = channels[idx];
-                                                        const rawVal = chData?.value !== null && chData?.value !== undefined ? Number(chData.value) : null;
-                                                        return (
-                                                        <tr key={key} className="hover:bg-surface-muted/30 transition-colors">
-                                                            <td className="px-4 py-3">
-                                                                <div className="flex items-center gap-3">
-                                                                    <span className="font-mono font-bold text-text-muted text-xs bg-surface-muted px-2 py-1 rounded">{key}</span>
-                                                                    <input type="text" value={ch.name}
-                                                                        onChange={(e) => setCalibration(p => ({ ...p, [key]: { ...p[key], name: e.target.value } }))}
-                                                                        className="w-full px-2 py-1.5 rounded border border-border-subtle text-sm font-semibold focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-shadow"
-                                                                        placeholder="Name"
-                                                                    />
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-4 py-3">
-                                                                <div className="flex items-center justify-center gap-2">
-                                                                    <input type="number" value={ch.min} onChange={(e) => setCalibration(p => ({ ...p, [key]: { ...p[key], min: Number(e.target.value) } }))} className="w-16 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-mono focus:border-primary outline-none" />
-                                                                    <span className="text-text-muted font-bold">–</span>
-                                                                    <input type="number" value={ch.max} onChange={(e) => setCalibration(p => ({ ...p, [key]: { ...p[key], max: Number(e.target.value) } }))} className="w-16 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-mono focus:border-primary outline-none" />
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-4 py-3">
-                                                                <div className="flex justify-center">
-                                                                    <input type="number" step="0.01" value={ch.fac} onChange={(e) => setCalibration(p => ({ ...p, [key]: { ...p[key], fac: Number(e.target.value) } }))} className="w-20 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-mono focus:border-primary outline-none" />
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-4 py-3">
-                                                                <div className="flex justify-center">
-                                                                    <input type="number" step="0.01" value={ch.cal} onChange={(e) => setCalibration(p => ({ ...p, [key]: { ...p[key], cal: Number(e.target.value) } }))} className="w-20 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-bold text-primary focus:border-primary outline-none" />
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-4 py-3 text-right">
-                                                                <span className="font-mono font-black text-primary bg-primary/5 px-2 py-1 rounded text-sm">
-                                                                    {rawVal !== null ? rawVal.toFixed(2) : "—"}
-                                                                </span>
-                                                            </td>
+                                        <div className="border border-border-subtle rounded-xl shadow-sm overflow-hidden">
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full min-w-[1150px] text-left text-sm">
+                                                    <thead className="bg-surface-muted text-[11px] uppercase tracking-wider text-text-muted">
+                                                        <tr>
+                                                            <th className="px-4 py-3 font-bold border-b border-border-subtle">Channel Name (SNO)</th>
+                                                            <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Range (MIN – MAX)</th>
+                                                            <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Factor (Operation)</th>
+                                                            <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Calibration (CAL)</th>
+                                                            <th className="px-4 py-3 font-bold text-center border-b border-border-subtle">Threshold (MIN – MAX)</th>
+                                                            <th className="px-4 py-3 font-bold text-right border-b border-border-subtle">Raw Value</th>
+                                                            <th className="px-4 py-3 font-bold text-right border-b border-border-subtle">Calibrated Value</th>
                                                         </tr>
-                                                    )})}
-                                                </tbody>
-                                            </table>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-border-subtle">
+                                                        {Object.entries(calibration).map(([key, ch]) => {
+                                                            const channelIndex = Number.parseInt(key.replace("CH", ""), 10);
+                                                            const rawVal = rawData[`RawCH${channelIndex}`];
+                                                            const calVal = calibratedData[`CH${channelIndex}`];
+                                                            const thresholdInvalid = (
+                                                                (ch.thresholdMin !== null && (ch.thresholdMin < ch.min || ch.thresholdMin > ch.max)) ||
+                                                                (ch.thresholdMax !== null && (ch.thresholdMax < ch.min || ch.thresholdMax > ch.max)) ||
+                                                                (ch.thresholdMin !== null && ch.thresholdMax !== null && ch.thresholdMin > ch.thresholdMax)
+                                                            );
+
+                                                            return (
+                                                                <tr key={key} className="hover:bg-surface-muted/30 transition-colors">
+                                                                    <td className="px-4 py-3">
+                                                                        <div className="flex items-center gap-3">
+                                                                            <span className="font-mono font-bold text-text-muted text-xs bg-surface-muted px-2 py-1 rounded">{key}</span>
+                                                                            <input
+                                                                                type="text"
+                                                                                value={ch.name}
+                                                                                onChange={(e) => updateChannelCalibration(key, (current) => ({ ...current, name: e.target.value }))}
+                                                                                className="w-full px-2 py-1.5 rounded border border-border-subtle text-sm font-semibold focus:border-primary focus:ring-1 focus:ring-primary/20 outline-none transition-shadow"
+                                                                                placeholder="Name"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3">
+                                                                        <div className="flex items-center justify-center gap-2">
+                                                                            <input
+                                                                                type="number"
+                                                                                value={ch.min}
+                                                                                onChange={(e) => handleRangeChange(key, "min", e.target.value)}
+                                                                                className="w-20 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-mono focus:border-primary outline-none"
+                                                                            />
+                                                                            <span className="text-text-muted font-bold">–</span>
+                                                                            <input
+                                                                                type="number"
+                                                                                value={ch.max}
+                                                                                onChange={(e) => handleRangeChange(key, "max", e.target.value)}
+                                                                                className="w-20 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-mono focus:border-primary outline-none"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3">
+                                                                        <div className="flex justify-center">
+                                                                            <select
+                                                                                value={ch.fac}
+                                                                                onChange={(e) => updateChannelCalibration(key, (current) => ({
+                                                                                    ...current,
+                                                                                    fac: parseFactorOperation(Number(e.target.value)),
+                                                                                }))}
+                                                                                className="w-36 px-2 py-1.5 rounded border border-border-subtle text-sm font-medium text-center bg-white focus:border-primary outline-none"
+                                                                            >
+                                                                                {FACTOR_OPTIONS.map((option) => (
+                                                                                    <option key={option.value} value={option.value}>
+                                                                                        {option.label}
+                                                                                    </option>
+                                                                                ))}
+                                                                            </select>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3">
+                                                                        <div className="flex justify-center">
+                                                                            <input
+                                                                                type="number"
+                                                                                step="0.01"
+                                                                                value={ch.cal}
+                                                                                onChange={(e) => updateChannelCalibration(key, (current) => ({
+                                                                                    ...current,
+                                                                                    cal: toFiniteNumber(e.target.value, current.cal),
+                                                                                }))}
+                                                                                className="w-24 px-2 py-1.5 rounded border border-border-subtle text-center text-sm font-bold text-primary focus:border-primary outline-none"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3">
+                                                                        <div className="flex items-center justify-center gap-2">
+                                                                            <input
+                                                                                type="number"
+                                                                                value={ch.thresholdMin ?? ""}
+                                                                                onChange={(e) => handleThresholdChange(key, "thresholdMin", e.target.value)}
+                                                                                className={`w-20 px-2 py-1.5 rounded border text-center text-sm font-mono focus:border-primary outline-none ${thresholdInvalid ? "border-red-300" : "border-border-subtle"}`}
+                                                                                placeholder="Min"
+                                                                            />
+                                                                            <span className="text-text-muted font-bold">–</span>
+                                                                            <input
+                                                                                type="number"
+                                                                                value={ch.thresholdMax ?? ""}
+                                                                                onChange={(e) => handleThresholdChange(key, "thresholdMax", e.target.value)}
+                                                                                className={`w-20 px-2 py-1.5 rounded border text-center text-sm font-mono focus:border-primary outline-none ${thresholdInvalid ? "border-red-300" : "border-border-subtle"}`}
+                                                                                placeholder="Max"
+                                                                            />
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-right">
+                                                                        <span className="font-mono font-black text-primary bg-primary/5 px-2 py-1 rounded text-sm">
+                                                                            {rawVal !== null && rawVal !== undefined ? Number(rawVal).toFixed(2) : "—"}
+                                                                        </span>
+                                                                    </td>
+                                                                    <td className="px-4 py-3 text-right">
+                                                                        <span className="font-mono font-black text-text-primary bg-surface-muted px-2 py-1 rounded text-sm">
+                                                                            {calVal !== null && calVal !== undefined ? Number(calVal).toFixed(2) : "—"}
+                                                                        </span>
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
                                         </div>
                                     )}
 
@@ -499,7 +692,7 @@ export default function DeviceConfigPage() {
                                         <div className="flex items-start gap-2 p-3 mt-3 rounded-lg bg-primary/5 border border-primary/10">
                                             <Info className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
                                             <p className="text-xs text-text-muted">
-                                                Config is published directly to the backend and pushed to the device over MQTT. FAC = scaling factor, CAL = calibration offset.
+                                                Publish sends SNO, range, factor-operation and calibration fields. Threshold values are editable here but not published yet.
                                             </p>
                                         </div>
                                     )}
@@ -573,11 +766,11 @@ export default function DeviceConfigPage() {
                             </div>
                         ) : (
                             channels.map((ch, i) => {
-                                const chKey = `CH${i + 1}`;
+                                const chKey = `CH${ch.index}`;
                                 // Use the name from calibration config (e.g. "RO Feed PH") if loaded
                                 const displayName = calibration[chKey]?.name || ch.name;
                                 return (
-                                    <div key={i} className="grid grid-cols-[3fr_2fr_1.5fr] gap-x-4 items-center px-4 py-3 hover:bg-surface-muted/30 transition-colors">
+                                    <div key={ch.channel} className="grid grid-cols-[3fr_2fr_1.5fr] gap-x-4 items-center px-4 py-3 hover:bg-surface-muted/30 transition-colors">
                                         <div>
                                             <p className="text-sm font-bold text-text-primary mb-0.5">{displayName}</p>
                                             <div className="flex items-center gap-2">
@@ -637,20 +830,20 @@ export default function DeviceConfigPage() {
                             <div className="w-8 h-8 rounded-lg bg-surface-muted flex items-center justify-center">
                                 <Cpu className="w-4 h-4 text-text-muted" />
                             </div>
-                            <h4 className="text-sm font-bold text-text-primary">System Health</h4>
+                            <h4 className="text-sm font-bold text-text-primary">Message Rate</h4>
                         </div>
                         <div className="space-y-3">
                             <div>
                                 <div className="flex justify-between text-xs mb-1">
-                                    <span className="text-text-muted">MQTT Signal Rate</span>
-                                    <span className="font-semibold text-text-primary">{msgRate} msg/min</span>
+                                    <span className="text-text-muted">Message Rate</span>
+                                    <span className="font-semibold text-text-primary">{msgRate} / 12 msg/min</span>
                                 </div>
                                 <div className="w-full h-2 bg-surface-muted rounded-full overflow-hidden">
                                     <div
                                         className="h-full rounded-full transition-all duration-700"
                                         style={{
                                             width: `${signalPct}%`,
-                                            backgroundColor: signalPct > 60 ? "#10b981" : signalPct > 20 ? "#f59e0b" : "#ef4444",
+                                            backgroundColor: "#6b7280",
                                         }}
                                     />
                                 </div>
