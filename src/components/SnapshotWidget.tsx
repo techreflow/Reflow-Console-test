@@ -12,24 +12,36 @@ export default function SnapshotWidget() {
     const barData = useMemo(() => {
         if (projects.length === 0) {
             return [
-                { height: 20, color: "bg-primary/20", label: "", count: 0 },
-                { height: 30, color: "bg-primary/30", label: "", count: 0 },
-                { height: 15, color: "bg-primary/15", label: "", count: 0 },
+                { height: 20, opacity: 0.35, label: "", count: 0 },
+                { height: 30, opacity: 0.55, label: "", count: 0 },
+                { height: 15, opacity: 0.25, label: "", count: 0 },
             ];
         }
-        return projects.slice(0, 8).map((p) => {
-            const count = (p.devices || []).length;
-            const maxDevices = Math.max(1, ...projects.map(pr => (pr.devices || []).length));
-            const pct = Math.max(15, Math.round((count / maxDevices) * 100));
-            const opacity = Math.max(25, Math.round((count / maxDevices) * 100));
+
+        const projectCounts = projects.slice(0, 8).map((p) => {
+            const projectId = (p as any).id || (p as any)._id;
+            const nestedCount = Array.isArray((p as any).devices) ? (p as any).devices.length : 0;
+            if (nestedCount > 0) {
+                return { project: p, count: nestedCount };
+            }
+            const fallbackCount = devices.filter((d: any) => d.projectId === projectId).length;
+            return { project: p, count: fallbackCount };
+        });
+
+        const maxDevices = Math.max(1, ...projectCounts.map((x) => x.count));
+
+        return projectCounts.map(({ project, count }) => {
+            const ratio = count / maxDevices;
+            const pct = Math.max(15, Math.round(ratio * 100));
+            const opacity = count === maxDevices ? 1 : Math.max(0.25, Number((ratio * 0.9).toFixed(2)));
             return {
                 height: pct,
-                color: count === maxDevices ? "bg-primary" : `bg-primary/${opacity}`,
-                label: p.name,
+                opacity,
+                label: (project as any).name || "Project",
                 count,
             };
         });
-    }, [projects]);
+    }, [projects, devices]);
 
     const totalDevices = devices.length;
     const totalProjects = projects.length;
@@ -63,7 +75,8 @@ export default function SnapshotWidget() {
                                 initial={{ height: 0 }}
                                 animate={{ height: `${bar.height}%` }}
                                 transition={{ duration: 0.5, delay: 0.4 + i * 0.05 }}
-                                className={`flex-1 ${bar.color} rounded-t-md cursor-default`}
+                                className="flex-1 bg-primary rounded-t-md cursor-default"
+                                style={{ opacity: bar.opacity }}
                                 title={bar.label ? `${bar.label}: ${bar.count} devices` : undefined}
                             />
                         ))}

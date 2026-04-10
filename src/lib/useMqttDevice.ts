@@ -1,9 +1,10 @@
 /**
- * useMqttDevice — shared real-time MQTT hook
+ * useMqttDevice — shared real-time MQTT hooks
  *
- * Polls /api/mqtt-readings?serialId=X every `intervalMs` milliseconds.
- * Tracks online/offline status by checking whether data was received recently.
- * Keeps a rolling history buffer for spark charts.
+ * Global polling model:
+ * - One poller per serial number (singleton, shared across pages/components)
+ * - Subscribers receive cached presence state immediately
+ * - Polling pauses when no subscribers, cache retained with TTL for route changes
  */
 "use client";
 
@@ -28,35 +29,77 @@ export interface MqttHistoryRow {
 export interface UseMqttDeviceResult {
     channels: MqttChannel[];
     isOnline: boolean;
-    /** false = still checking within grace window; true = resolved online/offline */
+    /** false = checking grace window, true = resolved online/offline */
     checked: boolean;
     lastSync: string | null;
     mqttError: boolean;
-    /** true when latest payload has ERR === 1 (sensor not connected / malfunctioning) */
     sensorErr: boolean;
-    /** Raw UpdateTimeStamp string from device payload, for display */
     updateTs: string | null;
-    /** Rolling history of raw readings — up to `maxHistory` points */
     history: MqttHistoryRow[];
-    /** Latest raw channel readings from MQTT payload (RawCH1..RawCH6). */
     rawData: Record<string, number | null>;
-    /** Latest calibrated channel readings from MQTT payload (CH1..CH6). */
     calibratedData: Record<string, number | null>;
-    /** Force an immediate re-poll */
     refresh: () => void;
 }
 
-function deriveTrend(
-    prev: number | null,
-    curr: number | null
-): "up" | "down" | "stable" | "warning" {
+type PresenceState = "checking" | "online" | "offline";
+
+type MqttPayload = Record<string, unknown>;
+
+interface PresenceSnapshot {
+    state: PresenceState;
+    isOnline: boolean;
+    checked: boolean;
+    sensorErr: boolean;
+    mqttError: boolean;
+    lastHealthyAt: number;
+    mountedAt: number;
+    updatedAt: number;
+    data: MqttPayload | null;
+    sampleTs: number | null;
+    isFreshSignal: boolean;
+}
+
+interface PresenceEntry {
+    serial: string;
+    intervalMs: number;
+    onlineThresholdMs: number;
+    snapshot: PresenceSnapshot;
+    subscribers: Set<(snapshot: PresenceSnapshot) => void>;
+    timer: ReturnType<typeof setInterval> | null;
+    stopTimer: ReturnType<typeof setTimeout> | null;
+    inFlight: boolean;
+}
+
+const OFFLINE_GRACE_MS = Math.max(10_000, POLLING_CONFIG.MQTT_OFFLINE_GRACE_MS ?? 60_000);
+const INITIAL_CHECKING_WINDOW_MS = 30_000;
+const PRESENCE_CACHE_TTL_MS = 5 * 60_000;
+const UNSUBSCRIBE_STOP_DELAY_MS = 60_000;
+const HIDDEN_INTERVAL_MULTIPLIER = 3;
+const MIN_INTERVAL_MS = 2_000;
+const MAX_INTERVAL_MS = 60_000;
+
+const presenceStore = new Map<string, PresenceEntry>();
+let runtimeInitialized = false;
+let isPageHidden = false;
+
+function clampInterval(intervalMs: number): number {
+    if (!Number.isFinite(intervalMs)) return POLLING_CONFIG.MQTT_STATUS_POLL;
+    return Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, Math.round(intervalMs)));
+}
+
+function getEffectiveInterval(baseIntervalMs: number): number {
+    const base = clampInterval(baseIntervalMs);
+    return isPageHidden ? Math.min(MAX_INTERVAL_MS, base * HIDDEN_INTERVAL_MULTIPLIER) : base;
+}
+
+function deriveTrend(prev: number | null, curr: number | null): "up" | "down" | "stable" | "warning" {
     if (prev === null || curr === null) return "stable";
     if (curr > prev * 1.1) return "up";
     if (curr < prev * 0.9) return "down";
     return "stable";
 }
 
-function getPayloadTimestamp(data: Record<string, unknown> | null | undefined): number | null {
+function getPayloadTimestamp(data: MqttPayload | null | undefined): number | null {
     if (!data) return null;
     const raw = data._ts ?? data._rxTs ?? data.ts ?? data.timestamp ?? data.createdAt;
 
@@ -83,37 +126,6 @@ function getPayloadTimestamp(data: Record<string, unknown> | null | undefined): 
     return null;
 }
 
-type PresenceState = "checking" | "online" | "offline";
-
-interface PresenceCacheEntry {
-    state: PresenceState;
-    lastHealthyAt: number;
-    updatedAt: number;
-}
-
-const OFFLINE_GRACE_MS = Math.max(10_000, POLLING_CONFIG.MQTT_OFFLINE_GRACE_MS ?? 60_000);
-const INITIAL_CHECKING_WINDOW_MS = 30_000;
-const PRESENCE_CACHE_TTL_MS = OFFLINE_GRACE_MS * 2;
-const presenceCache = new Map<string, PresenceCacheEntry>();
-
-function readPresenceCache(serialNumber: string): PresenceCacheEntry | null {
-    const cached = presenceCache.get(serialNumber);
-    if (!cached) return null;
-    if (Date.now() - cached.updatedAt > PRESENCE_CACHE_TTL_MS) {
-        presenceCache.delete(serialNumber);
-        return null;
-    }
-    return cached;
-}
-
-function writePresenceCache(serialNumber: string, state: PresenceState, lastHealthyAt: number) {
-    presenceCache.set(serialNumber, {
-        state,
-        lastHealthyAt,
-        updatedAt: Date.now(),
-    });
-}
-
 function resolvePresence(now: number, mountedAt: number, lastHealthyAt: number): { state: PresenceState; isOnline: boolean; checked: boolean } {
     if (lastHealthyAt > 0) {
         if ((now - lastHealthyAt) < OFFLINE_GRACE_MS) {
@@ -129,13 +141,233 @@ function resolvePresence(now: number, mountedAt: number, lastHealthyAt: number):
     return { state: "offline", isOnline: false, checked: true };
 }
 
-/**
- * @param serialNumber — device serial number to subscribe to
- * @param intervalMs   — polling interval in ms (default 3000)
- * @param maxHistory   — max history points to keep (default 60)
- * @param onlineThresholdMs — consider offline if no data for this many ms (default 10000)
- * @param enabled      — pause polling when false
- */
+function buildInitialSnapshot(now: number): PresenceSnapshot {
+    return {
+        state: "checking",
+        isOnline: false,
+        checked: false,
+        sensorErr: false,
+        mqttError: false,
+        lastHealthyAt: 0,
+        mountedAt: now,
+        updatedAt: now,
+        data: null,
+        sampleTs: null,
+        isFreshSignal: false,
+    };
+}
+
+function isEntryStale(entry: PresenceEntry): boolean {
+    if (entry.subscribers.size > 0) return false;
+    return (Date.now() - entry.snapshot.updatedAt) > PRESENCE_CACHE_TTL_MS;
+}
+
+function notifyEntry(entry: PresenceEntry) {
+    entry.subscribers.forEach((subscriber) => {
+        try {
+            subscriber(entry.snapshot);
+        } catch (err) {
+            console.error("[mqtt-presence] subscriber error", err);
+        }
+    });
+}
+
+function stopEntryTimer(entry: PresenceEntry) {
+    if (entry.timer) {
+        clearInterval(entry.timer);
+        entry.timer = null;
+    }
+}
+
+function restartEntryTimer(entry: PresenceEntry) {
+    stopEntryTimer(entry);
+    if (entry.subscribers.size === 0) return;
+
+    const interval = getEffectiveInterval(entry.intervalMs);
+    entry.timer = setInterval(() => {
+        void pollEntry(entry);
+    }, interval);
+}
+
+function scheduleEntryStop(entry: PresenceEntry) {
+    if (entry.stopTimer) {
+        clearTimeout(entry.stopTimer);
+        entry.stopTimer = null;
+    }
+
+    entry.stopTimer = setTimeout(() => {
+        if (entry.subscribers.size > 0) return;
+        stopEntryTimer(entry);
+        if (isEntryStale(entry)) {
+            presenceStore.delete(entry.serial);
+        }
+    }, UNSUBSCRIBE_STOP_DELAY_MS);
+}
+
+function refreshAllEntryTimers() {
+    presenceStore.forEach((entry) => {
+        if (entry.subscribers.size > 0) {
+            restartEntryTimer(entry);
+        }
+    });
+}
+
+function ensureEntry(serial: string, intervalMs: number, onlineThresholdMs: number): PresenceEntry {
+    const current = presenceStore.get(serial);
+    if (current && !isEntryStale(current)) {
+        current.intervalMs = Math.min(current.intervalMs, clampInterval(intervalMs));
+        current.onlineThresholdMs = Math.max(current.onlineThresholdMs, onlineThresholdMs);
+        return current;
+    }
+
+    if (current && isEntryStale(current)) {
+        presenceStore.delete(serial);
+    }
+
+    const now = Date.now();
+    const entry: PresenceEntry = {
+        serial,
+        intervalMs: clampInterval(intervalMs),
+        onlineThresholdMs,
+        snapshot: buildInitialSnapshot(now),
+        subscribers: new Set(),
+        timer: null,
+        stopTimer: null,
+        inFlight: false,
+    };
+    presenceStore.set(serial, entry);
+    return entry;
+}
+
+async function pollEntry(entry: PresenceEntry, force = false) {
+    if (entry.inFlight && !force) return;
+    entry.inFlight = true;
+
+    try {
+        const res = await fetch(`/api/mqtt-readings?serialId=${entry.serial}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        if (data?.error) throw new Error("mqtt error payload");
+
+        const payload = data as MqttPayload;
+        const now = Date.now();
+
+        const hasData = [1, 2, 3, 4, 5, 6].some((i) => {
+            const v = payload[`CH${i}`] ?? payload[`RawCH${i}`];
+            return v !== null && v !== undefined;
+        });
+
+        const payloadTs = getPayloadTimestamp(payload);
+        const isRetained = payload._isRetained === true;
+        const rxTs =
+            !isRetained &&
+            typeof payload._rxTs === "number" &&
+            payload._rxTs > 0
+                ? (payload._rxTs as number)
+                : null;
+
+        const sampleTs = (rxTs ?? payloadTs ?? null);
+        const freshFromPayload = payloadTs !== null && (now - payloadTs) < entry.onlineThresholdMs;
+        const freshFromRx = rxTs !== null && (now - rxTs) < OFFLINE_GRACE_MS;
+        const isFreshSignal = hasData && (freshFromPayload || freshFromRx);
+
+        const lastHealthyAt = isFreshSignal ? now : entry.snapshot.lastHealthyAt;
+        const presence = resolvePresence(now, entry.snapshot.mountedAt, lastHealthyAt);
+        const errVal = payload._err;
+
+        entry.snapshot = {
+            ...entry.snapshot,
+            state: presence.state,
+            isOnline: presence.isOnline,
+            checked: presence.checked,
+            sensorErr: errVal === 1 || errVal === "1",
+            mqttError: false,
+            lastHealthyAt,
+            updatedAt: now,
+            data: payload,
+            sampleTs,
+            isFreshSignal,
+        };
+        notifyEntry(entry);
+    } catch {
+        const now = Date.now();
+        const presence = resolvePresence(now, entry.snapshot.mountedAt, entry.snapshot.lastHealthyAt);
+
+        entry.snapshot = {
+            ...entry.snapshot,
+            state: presence.state,
+            isOnline: presence.isOnline,
+            checked: presence.checked,
+            sensorErr: false,
+            mqttError: true,
+            updatedAt: now,
+            data: null,
+            sampleTs: null,
+            isFreshSignal: false,
+        };
+        notifyEntry(entry);
+    } finally {
+        entry.inFlight = false;
+    }
+}
+
+function subscribePresence(
+    serial: string,
+    options: { intervalMs: number; onlineThresholdMs: number },
+    subscriber: (snapshot: PresenceSnapshot) => void
+): () => void {
+    initMqttPresenceRuntime();
+
+    const entry = ensureEntry(serial, options.intervalMs, options.onlineThresholdMs);
+
+    if (entry.stopTimer) {
+        clearTimeout(entry.stopTimer);
+        entry.stopTimer = null;
+    }
+
+    entry.subscribers.add(subscriber);
+    subscriber(entry.snapshot);
+
+    if (!entry.timer) {
+        restartEntryTimer(entry);
+    }
+
+    const shouldPollNow =
+        entry.snapshot.updatedAt === 0 ||
+        (Date.now() - entry.snapshot.updatedAt) > getEffectiveInterval(entry.intervalMs);
+
+    if (shouldPollNow || entry.snapshot.data === null) {
+        void pollEntry(entry);
+    }
+
+    return () => {
+        entry.subscribers.delete(subscriber);
+        if (entry.subscribers.size === 0) {
+            scheduleEntryStop(entry);
+        }
+    };
+}
+
+function requestPresencePoll(serial: string) {
+    const entry = presenceStore.get(serial);
+    if (!entry) return;
+    void pollEntry(entry, true);
+}
+
+export function initMqttPresenceRuntime() {
+    if (runtimeInitialized) return;
+    if (typeof window === "undefined") return;
+
+    runtimeInitialized = true;
+    isPageHidden = document.visibilityState === "hidden";
+
+    document.addEventListener("visibilitychange", () => {
+        isPageHidden = document.visibilityState === "hidden";
+        refreshAllEntryTimers();
+    });
+}
+
 export function useMqttDevice(
     serialNumber: string | null | undefined,
     intervalMs = POLLING_CONFIG.MQTT_POLL_INTERVAL,
@@ -156,138 +388,6 @@ export function useMqttDevice(
 
     const prevRaw = useRef<(number | null)[]>([null, null, null, null, null, null]);
     const lastDataTs = useRef<number>(0);
-    const mountedAtRef = useRef<number>(Date.now());
-    const lastHealthyAtRef = useRef<number>(0);
-    const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-    const fetchData = useCallback(async () => {
-        if (!serialNumber) return;
-
-        const applyPresence = () => {
-            const presenceNow = Date.now();
-            const presence = resolvePresence(presenceNow, mountedAtRef.current, lastHealthyAtRef.current);
-            setIsOnline(presence.isOnline);
-            setChecked(presence.checked);
-            writePresenceCache(serialNumber, presence.state, lastHealthyAtRef.current);
-        };
-
-        try {
-            const res = await fetch(`/api/mqtt-readings?serialId=${serialNumber}`);
-            if (!res.ok) throw new Error("MQTT fetch failed");
-            const data = await res.json();
-
-            if (data?.error) {
-                setMqttError(true);
-                applyPresence();
-                return;
-            }
-
-            // Build separate raw/calibrated vectors.
-            const rawValues = [1, 2, 3, 4, 5, 6].map((i) => {
-                const rawVal = data[`RawCH${i}`];
-                return rawVal !== null && rawVal !== undefined ? Number(rawVal) : null;
-            }) as (number | null)[];
-            const calibratedValues = [1, 2, 3, 4, 5, 6].map((i) => {
-                const cal = data[`CH${i}`];
-                return cal !== null && cal !== undefined ? Number(cal) : null;
-            }) as (number | null)[];
-            // Use calibrated CH values for display; fall back to RawCH if CH absent.
-            const displayValues = calibratedValues.map((cal, idx) => cal ?? rawValues[idx]) as (number | null)[];
-
-            const hasData = displayValues.some((v) => v !== null);
-            const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
-            const isRetained = (data as any)?._isRetained === true;
-
-            // ── Freshness determination ──────────────────────────────────────
-            // PRIMARY:  UpdateTimeStamp (_ts) from device payload – if within 60s → Online
-            // FALLBACK: _rxTs (server receive time) – ONLY for live messages
-            //           (subscribedAt window on server sets _rxTs=0 for retained replays)
-            const rxTs =
-                !isRetained &&
-                typeof (data as any)?._rxTs === "number" &&
-                (data as any)._rxTs > 0
-                    ? (data as any)._rxTs as number
-                    : null;
-
-            const now = Date.now();
-            const sampleTs = rxTs ?? payloadTs ?? 0;
-            const freshFromPayload = payloadTs !== null && (now - payloadTs) < onlineThresholdMs;
-            const freshFromRx = rxTs !== null && (now - rxTs) < OFFLINE_GRACE_MS;
-            const isFreshSignal = hasData && (freshFromPayload || freshFromRx);
-
-
-            if (hasData) {
-                // Build channel objects
-                const built: MqttChannel[] = displayValues
-                    .map((v, i) => ({
-                        index: i + 1,
-                        name: `Channel ${i + 1}`,
-                        channel: `CH-0${i + 1}`,
-                        unit: "—",
-                        value: v,
-                        trend: deriveTrend(prevRaw.current[i], v),
-                    }))
-                    .filter((c) => c.value !== null);
-
-                prevRaw.current = displayValues;
-                setChannels(built);
-
-                // ERR field: 0 = ok, 1 = sensor not connected / malfunctioning
-                const errVal = (data as any)?._err;
-                setSensorErr(errVal === 1 || errVal === "1");
-
-                // Raw UpdateTimeStamp string for display
-                const rawUpdateTs = (data as any)?._updateTs ?? null;
-                setUpdateTs(typeof rawUpdateTs === "string" ? rawUpdateTs : null);
-
-                // Build raw data map
-                const rawMap: Record<string, number | null> = {};
-                rawValues.forEach((v, i) => {
-                    rawMap[DEVICE_CHANNELS.NAMES[i] ?? `RawCH${i + 1}`] = v;
-                });
-                setRawData(rawMap);
-                const calibratedMap: Record<string, number | null> = {};
-                calibratedValues.forEach((v, i) => {
-                    calibratedMap[`CH${i + 1}`] = v;
-                });
-                setCalibratedData(calibratedMap);
-
-                const timeLabel = new Date(sampleTs || Date.now()).toLocaleTimeString("en-IN", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                    timeZone: "Asia/Kolkata",
-                });
-
-                if (isFreshSignal && sampleTs > lastDataTs.current) {
-                    // Append only fresh, newer samples to history.
-                    const row: MqttHistoryRow = { time: timeLabel, ts: sampleTs };
-                    displayValues.forEach((v, i) => {
-                        if (v !== null) row[`CH${i + 1}`] = v;
-                    });
-                    setHistory((prev) => {
-                        const next = [...prev, row];
-                        return next.length > maxHistory ? next.slice(next.length - maxHistory) : next;
-                    });
-                    setLastSync(timeLabel);
-                }
-
-                if (isFreshSignal) {
-                    lastHealthyAtRef.current = now;
-                }
-
-                lastDataTs.current = Math.max(lastDataTs.current, sampleTs);
-                applyPresence();
-                setMqttError(false);
-            } else {
-                // No channel payload values in this poll.
-                applyPresence();
-            }
-        } catch {
-            setMqttError(true);
-            applyPresence();
-        }
-    }, [serialNumber, maxHistory, onlineThresholdMs]);
 
     useEffect(() => {
         if (!serialNumber || !enabled) {
@@ -295,32 +395,97 @@ export function useMqttDevice(
             setIsOnline(false);
             setChecked(false);
             setMqttError(false);
+            setSensorErr(false);
+            setUpdateTs(null);
             return;
         }
 
-        const now = Date.now();
-        mountedAtRef.current = now;
-        lastDataTs.current = 0;
+        const unsubscribe = subscribePresence(
+            serialNumber,
+            { intervalMs, onlineThresholdMs },
+            (snapshot) => {
+                setIsOnline(snapshot.isOnline);
+                setChecked(snapshot.checked);
+                setMqttError(snapshot.mqttError);
+                setSensorErr(snapshot.sensorErr);
 
-        const cached = readPresenceCache(serialNumber);
-        if (cached) {
-            lastHealthyAtRef.current = cached.lastHealthyAt;
-            const presence = resolvePresence(now, cached.updatedAt, cached.lastHealthyAt);
-            setIsOnline(presence.isOnline);
-            setChecked(presence.checked);
-        } else {
-            lastHealthyAtRef.current = 0;
-            setIsOnline(false);
-            setChecked(false);
-        }
+                const data = snapshot.data;
+                if (!data) return;
 
-        // Immediate first fetch
-        fetchData();
-        intervalRef.current = setInterval(fetchData, intervalMs);
-        return () => {
-            if (intervalRef.current) clearInterval(intervalRef.current);
-        };
-    }, [serialNumber, intervalMs, enabled, fetchData]);
+                const rawValues = [1, 2, 3, 4, 5, 6].map((i) => {
+                    const rawVal = data[`RawCH${i}`];
+                    return rawVal !== null && rawVal !== undefined ? Number(rawVal) : null;
+                }) as (number | null)[];
+
+                const calibratedValues = [1, 2, 3, 4, 5, 6].map((i) => {
+                    const cal = data[`CH${i}`];
+                    return cal !== null && cal !== undefined ? Number(cal) : null;
+                }) as (number | null)[];
+
+                const displayValues = calibratedValues.map((cal, idx) => cal ?? rawValues[idx]) as (number | null)[];
+                const hasData = displayValues.some((v) => v !== null);
+
+                if (hasData) {
+                    const built: MqttChannel[] = displayValues
+                        .map((v, i) => ({
+                            index: i + 1,
+                            name: `Channel ${i + 1}`,
+                            channel: `CH-0${i + 1}`,
+                            unit: "—",
+                            value: v,
+                            trend: deriveTrend(prevRaw.current[i], v),
+                        }))
+                        .filter((c) => c.value !== null);
+                    prevRaw.current = displayValues;
+                    setChannels(built);
+                }
+
+                const rawUpdateTs = data._updateTs;
+                setUpdateTs(typeof rawUpdateTs === "string" ? rawUpdateTs : null);
+
+                const rawMap: Record<string, number | null> = {};
+                rawValues.forEach((v, i) => {
+                    rawMap[DEVICE_CHANNELS.NAMES[i] ?? `RawCH${i + 1}`] = v;
+                });
+                setRawData(rawMap);
+
+                const calibratedMap: Record<string, number | null> = {};
+                calibratedValues.forEach((v, i) => {
+                    calibratedMap[`CH${i + 1}`] = v;
+                });
+                setCalibratedData(calibratedMap);
+
+                const sampleTs = snapshot.sampleTs ?? 0;
+                if (snapshot.isFreshSignal && sampleTs > lastDataTs.current) {
+                    const timeLabel = new Date(sampleTs).toLocaleTimeString("en-IN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                        timeZone: "Asia/Kolkata",
+                    });
+
+                    const row: MqttHistoryRow = { time: timeLabel, ts: sampleTs };
+                    displayValues.forEach((v, i) => {
+                        if (v !== null) row[`CH${i + 1}`] = v;
+                    });
+
+                    setHistory((prev) => {
+                        const next = [...prev, row];
+                        return next.length > maxHistory ? next.slice(next.length - maxHistory) : next;
+                    });
+                    setLastSync(timeLabel);
+                    lastDataTs.current = sampleTs;
+                }
+            }
+        );
+
+        return unsubscribe;
+    }, [serialNumber, intervalMs, maxHistory, onlineThresholdMs, enabled]);
+
+    const refresh = useCallback(() => {
+        if (!serialNumber) return;
+        requestPresencePoll(serialNumber);
+    }, [serialNumber]);
 
     return {
         channels,
@@ -333,13 +498,12 @@ export function useMqttDevice(
         history,
         rawData,
         calibratedData,
-        refresh: fetchData,
+        refresh,
     };
 }
 
 /**
- * Lightweight hook for checking online/offline status only — no channel reads held in state.
- * Useful for bulk status checks on the Devices list page.
+ * Lightweight shared status hook for list pages.
  */
 export function useMqttStatus(
     serialNumber: string | null | undefined,
@@ -349,8 +513,6 @@ export function useMqttStatus(
     const [isOnline, setIsOnline] = useState(false);
     const [checked, setChecked] = useState(false);
     const [sensorErr, setSensorErr] = useState(false);
-    const mountedAtRef = useRef<number>(Date.now());
-    const lastHealthyAtRef = useRef<number>(0);
 
     useEffect(() => {
         if (!serialNumber) {
@@ -359,85 +521,18 @@ export function useMqttStatus(
             setSensorErr(false);
             return;
         }
-        let mounted = true;
 
-        const now = Date.now();
-        mountedAtRef.current = now;
-        const cached = readPresenceCache(serialNumber);
-        if (cached) {
-            lastHealthyAtRef.current = cached.lastHealthyAt;
-            const presence = resolvePresence(now, cached.updatedAt, cached.lastHealthyAt);
-            if (mounted) {
-                setIsOnline(presence.isOnline);
-                setChecked(presence.checked);
+        const unsubscribe = subscribePresence(
+            serialNumber,
+            { intervalMs, onlineThresholdMs },
+            (snapshot) => {
+                setIsOnline(snapshot.isOnline);
+                setChecked(snapshot.checked);
+                setSensorErr(snapshot.sensorErr);
             }
-        } else {
-            lastHealthyAtRef.current = 0;
-            if (mounted) {
-                setIsOnline(false);
-                setChecked(false);
-            }
-        }
+        );
 
-        const check = async () => {
-            const applyPresence = () => {
-                const presenceNow = Date.now();
-                const presence = resolvePresence(presenceNow, mountedAtRef.current, lastHealthyAtRef.current);
-                if (mounted) {
-                    setIsOnline(presence.isOnline);
-                    setChecked(presence.checked);
-                }
-                writePresenceCache(serialNumber, presence.state, lastHealthyAtRef.current);
-            };
-
-            try {
-                const res = await fetch(`/api/mqtt-readings?serialId=${serialNumber}`);
-                if (!res.ok) throw new Error("bad response");
-                const data = await res.json();
-                if (data?.error) throw new Error("mqtt data error");
-
-                const hasData = data && !data.error && [1, 2, 3, 4, 5, 6].some(
-                    (i) => (data[`CH${i}`] ?? data[`RawCH${i}`]) !== null &&
-                           (data[`CH${i}`] ?? data[`RawCH${i}`]) !== undefined
-                );
-                const payloadTs = getPayloadTimestamp(data as Record<string, unknown>);
-                const isRetained = (data as any)?._isRetained === true;
-                // PRIMARY: UpdateTimeStamp. FALLBACK: _rxTs (live only via subscribedAt window)
-                const rxTs =
-                    !isRetained &&
-                    typeof (data as any)?._rxTs === "number" &&
-                    (data as any)._rxTs > 0
-                        ? (data as any)._rxTs as number
-                        : null;
-                const tsNow = Date.now();
-                const freshFromPayload = payloadTs !== null && (tsNow - payloadTs) < onlineThresholdMs;
-                const freshFromRx = rxTs !== null && (tsNow - rxTs) < OFFLINE_GRACE_MS;
-                const isFreshSignal = hasData && (freshFromPayload || freshFromRx);
-                // ERR field: 0 = ok, 1 = sensor not connected / malfunctioning
-                const errVal = (data as any)?._err;
-
-                if (isFreshSignal) {
-                    lastHealthyAtRef.current = tsNow;
-                }
-
-                if (mounted) {
-                    setSensorErr(errVal === 1 || errVal === "1");
-                }
-                applyPresence();
-            } catch {
-                if (mounted) {
-                    setSensorErr(false);
-                }
-                applyPresence();
-            }
-        };
-
-        check();
-        const id = setInterval(check, intervalMs);
-        return () => {
-            mounted = false;
-            clearInterval(id);
-        };
+        return unsubscribe;
     }, [serialNumber, intervalMs, onlineThresholdMs]);
 
     return { isOnline, checked, sensorErr };
