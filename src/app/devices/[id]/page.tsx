@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import DashboardLayout from "@/components/DashboardLayout";
 import { getDeviceDetails, getUserEmail, getUserName, getToken } from "@/lib/api";
+import { useProjects } from "@/lib/ProjectsContext";
 import { useMqttDevice } from "@/lib/useMqttDevice";
 import {
     AreaChart, Area, ResponsiveContainer, Tooltip as RechartTooltip,
@@ -158,6 +159,7 @@ export default function DeviceConfigPage() {
     const email = getUserEmail();
     const fullName = getUserName();
     const deviceId = params.id as string;
+    const { removeDeviceFromCache, refresh } = useProjects();
 
     // Device info
     const [device, setDevice] = useState<DeviceInfo | null>(null);
@@ -430,7 +432,15 @@ export default function DeviceConfigPage() {
                 const candidate = deleteCandidates[i];
                 try {
                     await deleteDevice(candidate);
+                    const ids = Array.from(new Set([device?.id, deviceId, candidate].filter(Boolean) as string[]));
+                    const serials = Array.from(new Set([device?.serialNumber].filter(Boolean) as string[]));
+                    removeDeviceFromCache({ ids, serials });
                     router.push("/devices");
+                    // Refetch in background to confirm backend state and avoid stale rows.
+                    void refresh();
+                    setTimeout(() => {
+                        void refresh();
+                    }, 1500);
                     return;
                 } catch (err) {
                     lastError = err;

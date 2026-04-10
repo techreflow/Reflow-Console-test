@@ -45,6 +45,8 @@ interface ProjectsContextValue {
     error: string | null;
     /** Force a fresh re-fetch from the backend */
     refresh: () => Promise<void>;
+    /** Optimistically remove a deleted device from in-memory cache */
+    removeDeviceFromCache: (matcher: { ids?: string[]; serials?: string[] }) => void;
     /** Get devices for a specific project */
     getDevicesForProject: (projectId: string) => Device[];
     /** Last fetch timestamp */
@@ -210,6 +212,49 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
         [devices]
     );
 
+    const removeDeviceFromCache = useCallback((matcher: { ids?: string[]; serials?: string[] }) => {
+        const idSet = new Set((matcher.ids || []).map((v) => String(v || "").trim()).filter(Boolean));
+        const serialSet = new Set((matcher.serials || []).map((v) => String(v || "").trim()).filter(Boolean));
+        if (idSet.size === 0 && serialSet.size === 0) return;
+
+        const shouldRemove = (value: unknown, nestedValue?: unknown) => {
+            const selfId = String((value as any)?.id || (value as any)?._id || "").trim();
+            const selfSerial = String(
+                (value as any)?.serial_no ||
+                (value as any)?.serialNumber ||
+                (value as any)?.serialNo ||
+                (value as any)?.serial_number ||
+                ""
+            ).trim();
+            const nestedId = String((nestedValue as any)?.id || (nestedValue as any)?._id || "").trim();
+            const nestedSerial = String(
+                (nestedValue as any)?.serial_no ||
+                (nestedValue as any)?.serialNumber ||
+                (nestedValue as any)?.serialNo ||
+                (nestedValue as any)?.serial_number ||
+                ""
+            ).trim();
+
+            return (
+                (selfId && idSet.has(selfId)) ||
+                (nestedId && idSet.has(nestedId)) ||
+                (selfSerial && serialSet.has(selfSerial)) ||
+                (nestedSerial && serialSet.has(nestedSerial))
+            );
+        };
+
+        setDevices((prev) => prev.filter((d) => !shouldRemove(d)));
+        setProjects((prev) =>
+            prev.map((project) => {
+                if (!Array.isArray(project.devices)) return project;
+                return {
+                    ...project,
+                    devices: project.devices.filter((dev: any) => !shouldRemove(dev, dev?.device)),
+                };
+            })
+        );
+    }, []);
+
     return (
         <ProjectsContext.Provider
             value={{
@@ -220,6 +265,7 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
                 loading,
                 error,
                 refresh: fetchAll,
+                removeDeviceFromCache,
                 getDevicesForProject,
                 lastFetched,
             }}
