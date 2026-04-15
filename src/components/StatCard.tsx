@@ -13,6 +13,7 @@ interface StatCardProps {
   iconBg?: string;
   subtitle?: string;
   index?: number;
+  onClick?: () => void;
 }
 
 export default function StatCard({
@@ -25,13 +26,26 @@ export default function StatCard({
   iconBg = "bg-primary/10",
   subtitle,
   index = 0,
+  onClick,
 }: StatCardProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: index * 0.08 }}
-      className="rounded-xl p-5 bg-white border border-border-subtle hover-lift"
+      className={`rounded-xl p-5 bg-white border border-border-subtle hover-lift ${
+        onClick ? "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30" : ""
+      }`}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (!onClick) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      tabIndex={onClick ? 0 : -1}
+      role={onClick ? "button" : undefined}
     >
       <div className="flex items-start justify-between mb-4">
         <p className="text-sm text-text-muted font-medium">{title}</p>

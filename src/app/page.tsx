@@ -220,6 +220,7 @@ function DashboardContent() {
                 iconColor="text-blue-600"
                 iconBg="bg-blue-100"
                 index={0}
+                onClick={() => router.push("/projects")}
               />
               <StatCard
                 title="Total Devices"
@@ -229,6 +230,7 @@ function DashboardContent() {
                 iconColor="text-amber-600"
                 iconBg="bg-amber-100"
                 index={1}
+                onClick={() => router.push("/devices")}
               />
               <StatCard
                 title="Online Now"
@@ -245,6 +247,7 @@ function DashboardContent() {
                 iconColor={stats.activeDevices > 0 ? "text-green-600" : "text-slate-400"}
                 iconBg={stats.activeDevices > 0 ? "bg-green-100" : "bg-slate-100"}
                 index={2}
+                onClick={() => router.push("/devices")}
               />
               <StatCard
                 title="Shared Access"
@@ -254,7 +257,15 @@ function DashboardContent() {
                 iconColor="text-purple-600"
                 iconBg="bg-purple-100"
                 index={3}
+                onClick={() => router.push("/access")}
               />
+            </section>
+
+            {/* Mobile widgets (show deviations below stat cards) */}
+            <section className="xl:hidden space-y-4">
+              <DeviationWidget />
+              <SnapshotWidget />
+              <SharedWidget />
             </section>
 
             {/* Recent Projects */}
@@ -304,9 +315,9 @@ function DashboardContent() {
           </div>
 
           {/* Right Sidebar */}
-          <aside className="space-y-4">
-            <SnapshotWidget />
+          <aside className="hidden xl:block space-y-4">
             <DeviationWidget />
+            <SnapshotWidget />
             <SharedWidget />
           </aside>
         </div>
