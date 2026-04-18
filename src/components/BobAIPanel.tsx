@@ -4,7 +4,10 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Bot, RotateCcw, Send, Maximize2, Minimize2, Sparkles, Copy, Check } from "lucide-react";
 
-const BOT_API_URL = process.env.NEXT_PUBLIC_BOT_API_URL || "https://reflow-backend.fly.dev/api/v1/bot/chat";
+const API_BASE_URL = (process.env.NEXT_PUBLIC_REFLOW_API_URL || "https://reflow-backend.fly.dev/api/v1").replace(/\/+$/, "");
+const DASHBOARD_CHAT_BASE_URL = "https://reflow-backend.fly.dev/api/v1";
+const CHAT_REQUEST_TIMEOUT_MS = 15_000;
+const CHAT_BASE_CANDIDATES = Array.from(new Set([API_BASE_URL, DASHBOARD_CHAT_BASE_URL].filter(Boolean)));
 
 interface BobAIPanelProps {
     isOpen: boolean;
@@ -17,6 +20,98 @@ interface ChatMessage {
     role: "user" | "assistant";
     content: string;
     ts: number;
+}
+
+function getAuthToken(): string {
+    if (typeof window === "undefined") return "";
+    return sessionStorage.getItem("auth_token") || localStorage.getItem("auth_token") || "";
+}
+
+function getChatSessionId(payload: any): string | null {
+    return (
+        payload?.data?.session_id ||
+        payload?.data?.sessionId ||
+        payload?.data?._id ||
+        payload?.data?.id ||
+        payload?.session_id ||
+        payload?.sessionId ||
+        payload?._id ||
+        payload?.id ||
+        null
+    );
+}
+
+function getChatReply(payload: any): string | null {
+    return (
+        payload?.data?.response ||
+        payload?.data?.ai_response ||
+        payload?.response ||
+        payload?.reply ||
+        payload?.message ||
+        payload?.text ||
+        null
+    );
+}
+
+async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs = CHAT_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        const contentType = response.headers.get("content-type") || "";
+
+        if (contentType.includes("application/json")) {
+            const data = await response.json();
+            return { response, data, text: "" };
+        }
+
+        const text = await response.text();
+        return { response, data: null, text };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function buildAuthHeader(token: string): Record<string, string> {
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function createSessionForBase(baseUrl: string, targetDeviceId: string, token: string): Promise<{ sessionId: string; error?: string }> {
+    const endpoint = `${baseUrl}/create/chat/session`;
+    const first = await fetchJsonWithTimeout(endpoint, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...buildAuthHeader(token),
+        },
+        body: JSON.stringify({ device_id: targetDeviceId }),
+    });
+
+    if (first.response.ok) {
+        const parsedId = getChatSessionId(first.data);
+        if (parsedId) return { sessionId: parsedId };
+        return { sessionId: "", error: "Session id missing in response." };
+    }
+
+    // Match dashboard widget behavior: one retry without auth headers.
+    if (token && first.response.status === 401) {
+        const second = await fetchJsonWithTimeout(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_id: targetDeviceId }),
+        });
+        if (second.response.ok) {
+            const parsedId = getChatSessionId(second.data);
+            if (parsedId) return { sessionId: parsedId };
+            return { sessionId: "", error: "Session id missing in response." };
+        }
+        const secondError = second.data?.message || second.data?.error || second.text || `HTTP ${second.response.status}`;
+        return { sessionId: "", error: secondError };
+    }
+
+    const firstError = first.data?.message || first.data?.error || first.text || `HTTP ${first.response.status}`;
+    return { sessionId: "", error: firstError };
 }
 
 // ── Markdown-like renderer: bold, inline-code, bullet lists, numbered lists ──
@@ -126,6 +221,7 @@ export default function BobAIPanel({ isOpen, onClose, deviceId }: BobAIPanelProp
     const [input, setInput] = useState("");
     const [isThinking, setIsThinking] = useState(false);
     const [sessionId, setSessionId] = useState<string | null>(null);
+    const [sessionBaseUrl, setSessionBaseUrl] = useState<string | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -176,49 +272,77 @@ export default function BobAIPanel({ isOpen, onClose, deviceId }: BobAIPanelProp
         setIsThinking(true);
 
         try {
-            const token = typeof window !== "undefined"
-                ? (sessionStorage.getItem("auth_token") || localStorage.getItem("auth_token"))
-                : null;
-
+            const token = getAuthToken();
             let currentSessionId = sessionId;
+            let currentSessionBase = sessionBaseUrl;
 
             if (!currentSessionId) {
-                const sessionRes = await fetch("https://reflow-backend.fly.dev/api/v1/create/chat/session", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                    },
-                    body: JSON.stringify({
-                        device_id: deviceId || "GENERAL",
-                    }),
-                });
-                if (sessionRes.ok) {
-                    const sessionData = await sessionRes.json();
-                    currentSessionId = sessionData?.data?._id || sessionData?.data?.id || sessionData?.data?.sessionId || sessionData?.sessionId || sessionData?._id || sessionData?.session_id;
-                    if (currentSessionId) setSessionId(currentSessionId);
+                const targetDeviceId = deviceId || "GENERAL";
+                const errors: string[] = [];
+
+                for (const baseUrl of CHAT_BASE_CANDIDATES) {
+                    try {
+                        const result = await createSessionForBase(baseUrl, targetDeviceId, token);
+                        if (result.sessionId) {
+                            currentSessionId = result.sessionId;
+                            currentSessionBase = baseUrl;
+                            break;
+                        }
+                        if (result.error) errors.push(`${baseUrl}: ${result.error}`);
+                    } catch (err: any) {
+                        const reason = typeof err?.message === "string" ? err.message : "unknown error";
+                        errors.push(`${baseUrl}: ${reason}`);
+                    }
                 }
+
+                if (!currentSessionId || !currentSessionBase) {
+                    throw new Error(`Session creation failed. ${errors.join(" | ")}`);
+                }
+
+                setSessionId(currentSessionId);
+                setSessionBaseUrl(currentSessionBase);
             }
 
             let reply: string | null = null;
-            
-            if (currentSessionId) {
-                const responseUrl = `https://reflow-backend.fly.dev/api/v1/generate/chat/${currentSessionId}/response`;
-                const res = await fetch(responseUrl, {
+
+            if (currentSessionId && currentSessionBase) {
+                const responseUrl = `${currentSessionBase}/generate/chat/${currentSessionId}/response`;
+                const { response: res, data, text: responseText } = await fetchJsonWithTimeout(responseUrl, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        ...buildAuthHeader(token),
                     },
                     body: JSON.stringify({
                         user_query: msg,
                     }),
                 });
-    
-                if (res.ok) {
-                    const data = await res.json();
-                    reply = data?.data?.response || data?.response || data?.reply || data?.message || data?.text || data?.data?.ai_response || null;
+
+                let finalResponse = res;
+                let finalData = data;
+                let finalText = responseText;
+
+                if (!res.ok && token && res.status === 401) {
+                    const retry = await fetchJsonWithTimeout(responseUrl, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                            user_query: msg,
+                        }),
+                    });
+                    finalResponse = retry.response;
+                    finalData = retry.data;
+                    finalText = retry.text;
                 }
+
+                if (!finalResponse.ok) {
+                    const apiMessage = finalData?.message || finalData?.error || finalText || `HTTP ${finalResponse.status}`;
+                    throw new Error(`Chat response failed: ${apiMessage}`);
+                }
+
+                reply = getChatReply(finalData);
             }
 
             setMessages((prev) => [
@@ -230,26 +354,31 @@ export default function BobAIPanel({ isOpen, onClose, deviceId }: BobAIPanelProp
                     ts: Date.now(),
                 },
             ]);
-        } catch {
+        } catch (error: any) {
+            const message = error?.name === "AbortError"
+                ? "Chat request timed out. Please try again."
+                : (typeof error?.message === "string" ? error.message : "Unable to connect to chat right now.");
+
             setMessages((prev) => [
                 ...prev,
                 {
                     id: `a-${Date.now()}`,
                     role: "assistant",
-                    content: getFallbackReply(msg),
+                    content: `Bob AI is unavailable right now.\n\n${message}`,
                     ts: Date.now(),
                 },
             ]);
         } finally {
             setIsThinking(false);
         }
-    }, [input, isThinking, deviceId, sessionId]);
+    }, [input, isThinking, deviceId, sessionId, sessionBaseUrl]);
 
     const handleReset = () => {
         setMessages([]);
         setInput("");
         setIsThinking(false);
         setSessionId(null);
+        setSessionBaseUrl(null);
         setTimeout(() => {
             setMessages([{
                 id: "reset",
