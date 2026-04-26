@@ -52,11 +52,17 @@ interface ChannelCalibration {
 function formatLastSeen(iso: string | undefined): string {
     if (!iso) return "Unknown";
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "Unknown";
     const diff = Math.floor((Date.now() - d.getTime()) / 1000);
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     return d.toLocaleDateString();
+}
+
+function formatMqttLastSeen(isOnline: boolean, lastSync: string | null, backendLastSeen?: string): string {
+    if (lastSync) return isOnline ? "just now" : lastSync;
+    return backendLastSeen || "Unknown";
 }
 
 const SPARK_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"];
@@ -269,6 +275,10 @@ export default function DeviceConfigPage() {
         device?.serialNumber,
         3000,   // poll every 3s
         60,     // keep 60 history points for sparks
+    );
+    const visibleLastSeen = useMemo(
+        () => formatMqttLastSeen(checked && isOnline, lastSync, device?.lastSeen),
+        [checked, device?.lastSeen, isOnline, lastSync]
     );
 
     const hasInvalidDivisionCalibration = useMemo(
@@ -615,8 +625,8 @@ export default function DeviceConfigPage() {
                                     <Settings2 className="w-3.5 h-3.5" />
                                     {device?.serialNumber || deviceId}
                                 </span>
-                                {device?.lastSeen && (
-                                    <><span>•</span><span>Last seen: {device.lastSeen}</span></>
+                                {visibleLastSeen && (
+                                    <><span>•</span><span>Last seen: {visibleLastSeen}</span></>
                                 )}
                                 {lastSync && (
                                     <><span>•</span><span className="text-green-600">MQTT sync: {lastSync}</span></>

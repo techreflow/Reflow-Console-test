@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Bell, Search, HelpCircle, ChevronDown, User, Settings, LogOut, X, CheckCircle2, AlertTriangle, Info, Activity, BookOpen, Cpu, BarChart2, FileText, Zap } from "lucide-react";
+import { Bell, Search, HelpCircle, ChevronDown, User, Settings, LogOut, X, Activity, BookOpen, Cpu, BarChart2, FileText, Zap } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -11,13 +11,15 @@ interface HeaderProps {
   breadcrumbs?: { label: string; href?: string }[];
 }
 
-// ─── Sample notifications ──────────────────────────────────────────────────
-const NOTIFICATIONS = [
-  { id: 1, icon: Activity, color: "text-emerald-500 bg-emerald-50", title: "Device Online", body: "All devices are reporting normally.", time: "2 min ago", read: false },
-  { id: 2, icon: AlertTriangle, color: "text-amber-500 bg-amber-50", title: "Deviation Alert", body: "Deviation exceeded 15% threshold on AX312.", time: "18 min ago", read: false },
-  { id: 3, icon: CheckCircle2, color: "text-blue-500 bg-blue-50", title: "Export Ready", body: "Your data export from the Reports page is ready.", time: "1 hr ago", read: true },
-  { id: 4, icon: Info, color: "text-slate-500 bg-slate-100", title: "System Update", body: "ReFlow Console updated to a new version.", time: "3 hr ago", read: true },
-];
+interface NotificationItem {
+  id: number;
+  icon: typeof Activity;
+  color: string;
+  title: string;
+  body: string;
+  time: string;
+  read: boolean;
+}
 
 // ─── Help guide steps ──────────────────────────────────────────────────────
 const HELP_STEPS = [
@@ -37,7 +39,7 @@ const HELP_STEPS = [
     icon: BarChart2,
     color: "bg-purple-50 text-purple-600",
     title: "Analyse Historical Data",
-    desc: "Open Analytics, select a device and date range, then click Load. Switch between Line, Area and Bar charts. Toggle Deviation % mode to see signal drift.",
+    desc: "Open Analytics, select a device and date range, then click Load. Switch between Line and Bar charts. Toggle Deviation % mode to see signal drift.",
   },
   {
     icon: FileText,
@@ -54,8 +56,8 @@ const HELP_STEPS = [
   {
     icon: BookOpen,
     color: "bg-slate-100 text-slate-600",
-    title: "Monitor Deviations on Home",
-    desc: "The home page Deviations widget shows today's avg deviation %, weekly and monthly trend bars, and whether deviations are rising or falling across all your devices.",
+    title: "Monitor Downtime on Home",
+    desc: "The home page Downtime widget shows the organization deviation trend for the latest one-week window.",
   },
 ];
 
@@ -65,7 +67,7 @@ export default function Header({ title, subtitle, breadcrumbs }: HeaderProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const [notifications, setNotifications] = useState(NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -217,7 +219,13 @@ export default function Header({ title, subtitle, breadcrumbs }: HeaderProps) {
 
                   {/* List */}
                   <div className="max-h-72 overflow-y-auto divide-y divide-border-subtle">
-                    {notifications.map((n) => {
+                    {notifications.length === 0 ? (
+                      <div className="px-4 py-8 text-center">
+                        <Bell className="mx-auto h-6 w-6 text-text-muted" />
+                        <p className="mt-2 text-sm font-semibold text-text-primary">No notifications</p>
+                        <p className="mt-1 text-xs text-text-muted">New device and deviation alerts will appear here.</p>
+                      </div>
+                    ) : notifications.map((n) => {
                       const Icon = n.icon;
                       return (
                         <button
@@ -241,9 +249,11 @@ export default function Header({ title, subtitle, breadcrumbs }: HeaderProps) {
                     })}
                   </div>
 
-                  <div className="px-4 py-2.5 border-t border-border-subtle bg-surface-muted/20 text-center">
-                    <span className="text-[11px] text-text-muted">Only showing recent notifications</span>
-                  </div>
+                  {notifications.length > 0 && (
+                    <div className="px-4 py-2.5 border-t border-border-subtle bg-surface-muted/20 text-center">
+                      <span className="text-[11px] text-text-muted">Only showing recent notifications</span>
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
