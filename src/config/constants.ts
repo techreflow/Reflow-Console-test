@@ -76,7 +76,7 @@ export const CHART_CONFIG = {
     "#8b5cf6", // Purple
     "#ec4899", // Pink
   ] as const,
-  CHART_TYPES: ["Line", "Area", "Bar"] as const,
+  CHART_TYPES: ["Line", "Bar"] as const,
   MARGIN: { top: 5, right: 30, left: 20, bottom: 5 },
   TOOLTIP_STYLE: {
     backgroundColor: "#fff",

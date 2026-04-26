@@ -9,7 +9,6 @@ import { useMqttDevice, useMqttStatus } from "@/lib/useMqttDevice";
 import { CHART_CONFIG } from "@/config/constants";
 import {
     LineChart, Line,
-    AreaChart, Area,
     BarChart, Bar,
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine
 } from "recharts";
@@ -409,10 +408,10 @@ export default function AnalyticsPage() {
     // Toggle live mode
     const toggleLive = () => {
         if (!livePolling) {
-            // Switch to live: clear historical data and switch chart type to Area
+            // Switch to live: clear historical data and keep the lightweight line chart.
             setChartData([]);
             setChartError("");
-            setChartType("Area");
+            setChartType("Line");
         }
         setLivePolling((v) => !v);
     };
@@ -594,30 +593,6 @@ export default function AnalyticsPage() {
                         <Bar key={key} dataKey={key} name={channelConfig[key] || key} fill={getChannelColor(key)} opacity={0.85} radius={[3,3,0,0]} />
                     ))}
                 </BarChart>
-            );
-        }
-        if (chartType === "Area") {
-            return (
-                <AreaChart {...sharedProps}>
-                    <defs>
-                        {activeKeys.map((key) => (
-                            <linearGradient key={key} id={`ag-${key}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor={getChannelColor(key)} stopOpacity={0.25} />
-                                <stop offset="95%" stopColor={getChannelColor(key)} stopOpacity={0} />
-                            </linearGradient>
-                        ))}
-                    </defs>
-                    {grid}{xAxis}{yAxis}{tooltip}{legend}{idealLines}
-                    {activeKeys.map((key) => (
-                        <Area
-                            key={key} type="monotone" dataKey={key} name={channelConfig[key] || key}
-                            stroke={getChannelColor(key)} strokeWidth={2}
-                            fill={`url(#ag-${key})`} dot={false} activeDot={{ r: 4 }}
-                            connectNulls
-                            isAnimationActive={false}
-                        />
-                    ))}
-                </AreaChart>
             );
         }
         // Line (default)
@@ -807,7 +782,6 @@ export default function AnalyticsPage() {
                                         }`}
                                     >
                                         {t === "Line" && <Activity className="w-3 h-3 mx-auto mb-0.5" />}
-                                        {t === "Area" && <TrendingUp className="w-3 h-3 mx-auto mb-0.5" />}
                                         {t === "Bar" && <BarChart2 className="w-3 h-3 mx-auto mb-0.5" />}
                                         {t}
                                     </button>

@@ -5,6 +5,7 @@ import type { NextRequest } from "next/server";
 const PROTECTED_ROUTES = [
   "/",
   "/analytics",
+  "/downtime",
   "/devices",
   "/projects",
   "/reports",
@@ -85,6 +86,7 @@ export const config = {
   matcher: [
     "/",
     "/analytics/:path*",
+    "/downtime/:path*",
     "/devices/:path*",
     "/projects/:path*",
     "/reports/:path*",
