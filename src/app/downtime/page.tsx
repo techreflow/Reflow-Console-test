@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { getToken, getUserEmail, getUserName, isAuthenticated } from "@/lib/api";
+import { useProjects } from "@/lib/ProjectsContext";
+import { useMqttStatus } from "@/lib/useMqttDevice";
 import {
     ResponsiveContainer,
     BarChart,
@@ -18,6 +20,7 @@ import {
     BarChart3,
     Building2,
     Check,
+    ChevronDown,
     Cpu,
     Loader2,
     RefreshCw,
@@ -79,7 +82,9 @@ interface ChannelSeries {
 
 interface DeviceOption {
     id: string;
+    serial: string;
     label: string;
+    projectName?: string;
 }
 
 interface DeviationMeta {
@@ -130,7 +135,10 @@ function dateFromKey(key: string): Date {
 }
 
 function toDateKey(date: Date): string {
-    return date.toISOString().slice(0, 10);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
 }
 
 function addDays(date: Date, days: number): Date {
@@ -388,14 +396,28 @@ async function fetchDeviationJson(path: string, token: string, signal: AbortSign
     throw lastError || new Error("Failed to load deviation report");
 }
 
+function DeviceStatusDot({ serial }: { serial: string }) {
+    const { isOnline, checked } = useMqttStatus(serial, 15000);
+    if (!checked) return <span className="h-2.5 w-2.5 rounded-full bg-slate-300" title="Checking..." />;
+    return (
+        <span
+            className={`h-2.5 w-2.5 rounded-full ${isOnline ? "bg-emerald-500" : "bg-slate-400"}`}
+            title={isOnline ? "Online" : "Offline"}
+        />
+    );
+}
+
 export default function DowntimePage() {
     const email = getUserEmail();
     const fullName = getUserName();
     const token = getToken();
+    const { devices: cachedDevices } = useProjects();
+    const deviceDropdownRef = useRef<HTMLDivElement>(null);
 
     const [scope, setScope] = useState<Scope>("organization");
     const [period, setPeriod] = useState<PeriodKey>("1w");
     const [selectedDevice, setSelectedDevice] = useState("");
+    const [deviceDropdownOpen, setDeviceDropdownOpen] = useState(false);
     const [reports, setReports] = useState<NormalizedReport[]>([]);
     const [channelReports, setChannelReports] = useState<NormalizedChannelReport[]>([]);
     const [channelNameMap, setChannelNameMap] = useState<Record<string, string>>({});
@@ -412,15 +434,61 @@ export default function DowntimePage() {
     }, []);
 
     const deviceOptions = useMemo<DeviceOption[]>(() => {
-        return meta.deviceIds
-            .filter(Boolean)
-            .map((id) => ({
-                id,
-                label: id === selectedDevice && meta.deviceName ? `${meta.deviceName} (${id})` : id,
-            }));
-    }, [meta.deviceIds, meta.deviceName, selectedDevice]);
+        const bySerial = new Map<string, DeviceOption>();
+
+        cachedDevices.forEach((device: any) => {
+            const serial = String(
+                device.serialNumber ||
+                device.serial_no ||
+                device.serialNo ||
+                device.serial_number ||
+                device.id ||
+                device._id ||
+                ""
+            ).trim();
+            if (!serial || bySerial.has(serial)) return;
+
+            bySerial.set(serial, {
+                id: String(device.id || device._id || serial),
+                serial,
+                label: String(device.name || serial),
+                projectName: device.projectName,
+            });
+        });
+
+        meta.deviceIds.filter(Boolean).forEach((id) => {
+            const serial = String(id).trim();
+            if (!serial || bySerial.has(serial)) return;
+            bySerial.set(serial, {
+                id: serial,
+                serial,
+                label: serial === selectedDevice && meta.deviceName ? meta.deviceName : serial,
+            });
+        });
+
+        return Array.from(bySerial.values()).sort((a, b) => a.label.localeCompare(b.label));
+    }, [cachedDevices, meta.deviceIds, meta.deviceName, selectedDevice]);
 
     const fallbackDeviceId = meta.deviceIds[0] || "";
+    const selectedDeviceMeta = useMemo(() => {
+        return deviceOptions.find((device) => device.serial === selectedDevice || device.id === selectedDevice) || null;
+    }, [deviceOptions, selectedDevice]);
+
+    useEffect(() => {
+        function handleClickOutside(event: MouseEvent) {
+            if (deviceDropdownRef.current && !deviceDropdownRef.current.contains(event.target as Node)) {
+                setDeviceDropdownOpen(false);
+            }
+        }
+
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
+
+    useEffect(() => {
+        if (scope !== "device" || selectedDevice || deviceOptions.length === 0) return;
+        setSelectedDevice(deviceOptions[0].serial);
+    }, [deviceOptions, scope, selectedDevice]);
 
     const loadReport = useCallback(async () => {
         if (!token) return;
@@ -482,7 +550,7 @@ export default function DowntimePage() {
             return;
         }
 
-        const deviceId = selectedDevice || fallbackDeviceId;
+        const deviceId = selectedDeviceMeta?.serial || selectedDevice || fallbackDeviceId;
         if (!deviceId) {
             setChannelReports([]);
             setChannelError("");
@@ -515,7 +583,7 @@ export default function DowntimePage() {
         } finally {
             setChannelLoading(false);
         }
-    }, [fallbackDeviceId, scope, selectedDevice, token]);
+    }, [fallbackDeviceId, scope, selectedDevice, selectedDeviceMeta?.serial, token]);
 
     useEffect(() => {
         loadChannelReport();
@@ -527,7 +595,7 @@ export default function DowntimePage() {
             return;
         }
 
-        const deviceId = selectedDevice || fallbackDeviceId;
+        const deviceId = selectedDeviceMeta?.serial || selectedDevice || fallbackDeviceId;
         if (!deviceId) {
             setChannelNameMap({});
             return;
@@ -579,7 +647,7 @@ export default function DowntimePage() {
         return () => {
             cancelled = true;
         };
-    }, [fallbackDeviceId, scope, selectedDevice, token]);
+    }, [fallbackDeviceId, scope, selectedDevice, selectedDeviceMeta?.serial, token]);
 
     const chartData = useMemo(() => buildChartData(reports, period), [period, reports]);
     const channelIds = useMemo(() => getChannelIds(channelReports), [channelReports]);
@@ -672,17 +740,78 @@ export default function DowntimePage() {
                         </div>
 
                         {scope === "device" && (
-                            <select
-                                value={selectedDevice}
-                                onChange={(event) => setSelectedDevice(event.target.value)}
-                                className="min-h-10 rounded-xl border border-border-default bg-white px-3 py-2 text-sm font-semibold text-text-primary outline-none focus:border-primary"
-                            >
-                                {deviceOptions.map((device) => (
-                                    <option key={device.id} value={device.id}>
-                                        {device.label}
-                                    </option>
-                                ))}
-                            </select>
+                            <div className="relative min-w-[280px]" ref={deviceDropdownRef}>
+                                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-text-secondary">
+                                    Device <span className="text-primary">({deviceOptions.length})</span>
+                                </label>
+                                <button
+                                    type="button"
+                                    onClick={() => setDeviceDropdownOpen((open) => !open)}
+                                    className="flex min-h-11 w-full items-center justify-between gap-3 rounded-xl border-2 border-primary/70 bg-white px-3 py-2 text-left text-sm text-text-primary shadow-sm outline-none transition-colors hover:border-primary focus:border-primary"
+                                >
+                                    {selectedDeviceMeta ? (
+                                        <span className="flex min-w-0 items-center gap-3">
+                                            <DeviceStatusDot serial={selectedDeviceMeta.serial} />
+                                            <span className="min-w-0">
+                                                <span className="block truncate text-base font-semibold leading-tight">
+                                                    {selectedDeviceMeta.label}
+                                                </span>
+                                                {selectedDeviceMeta.projectName && (
+                                                    <span className="block truncate text-[11px] font-medium text-text-muted">
+                                                        {selectedDeviceMeta.projectName}
+                                                    </span>
+                                                )}
+                                            </span>
+                                        </span>
+                                    ) : (
+                                        <span className="text-text-muted">Select device</span>
+                                    )}
+                                    <ChevronDown className={`h-4 w-4 shrink-0 text-text-muted transition-transform ${deviceDropdownOpen ? "rotate-180" : ""}`} />
+                                </button>
+
+                                {deviceDropdownOpen && (
+                                    <div className="absolute right-0 z-40 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-border-subtle bg-white py-1 shadow-xl">
+                                        {deviceOptions.length === 0 ? (
+                                            <p className="px-3 py-3 text-center text-sm text-text-muted">No devices found</p>
+                                        ) : (
+                                            deviceOptions.map((device) => {
+                                                const isSelected = selectedDeviceMeta?.serial === device.serial;
+                                                return (
+                                                    <button
+                                                        key={device.serial}
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setSelectedDevice(device.serial);
+                                                            setDeviceDropdownOpen(false);
+                                                        }}
+                                                        className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition-colors ${
+                                                            isSelected ? "bg-primary/5 text-primary" : "text-text-primary hover:bg-surface-muted"
+                                                        }`}
+                                                    >
+                                                        <span className="flex min-w-0 items-center gap-3">
+                                                            <DeviceStatusDot serial={device.serial} />
+                                                            <span className="min-w-0">
+                                                                <span className="block truncate text-sm font-semibold leading-tight">
+                                                                    {device.label}
+                                                                </span>
+                                                                <span className="block truncate text-[11px] font-mono text-text-muted leading-tight">
+                                                                    {device.serial}
+                                                                </span>
+                                                                {device.projectName && (
+                                                                    <span className="block truncate text-[11px] font-medium text-text-muted leading-tight">
+                                                                        {device.projectName}
+                                                                    </span>
+                                                                )}
+                                                            </span>
+                                                        </span>
+                                                        {isSelected && <Check className="h-4 w-4 shrink-0 text-primary" />}
+                                                    </button>
+                                                );
+                                            })
+                                        )}
+                                    </div>
+                                )}
+                            </div>
                         )}
                     </div>
                 </section>
